@@ -306,6 +306,17 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
 - **`prod` pina uma tag por SHA em vez de `latest`**: evita que o
   ambiente de produção mude sozinho a cada novo `push` em `main` sem uma
   decisão explícita de promoção (só `dev` acompanha `main` automaticamente).
+- **`imagePullPolicy: IfNotPresent` explícito no Deployment**: sem isso, o
+  Kubernetes decide a política sozinho com base na tag ser ou não
+  literalmente `latest` — e essa decisão fica **gravada no objeto desde a
+  criação**, sobrevivendo até a um `kubectl set image` posterior que troque
+  a tag por outra coisa. Foi exatamente o bug que pegamos aqui: o overlay
+  `dev` cria o Deployment com a tag `latest` (política vira `Always` por
+  default), e a CI depois troca a imagem via `kubectl set image` para uma
+  tag que só existe localmente (carregada via `kind load docker-image`) —
+  sem o `IfNotPresent` explícito, o kubelet insistia em puxar da rede uma
+  tag que nunca foi publicada em lugar nenhum, e o pod ficava em
+  `ImagePullBackOff`.
 - **`kubeconform` além de `kustomize build`**: overlays com Kustomize
   aceitam silenciosamente campos com nome errado dentro de um patch — o
   `kubectl kustomize` renderiza normalmente, e o erro só aparece no

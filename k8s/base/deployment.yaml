@@ -17,6 +17,7 @@ spec:
       containers:
         - name: case-chatguru
           image: ghcr.io/wllgomes/case-chatguru:latest
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
               name: http
