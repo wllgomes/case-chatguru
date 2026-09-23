@@ -14,7 +14,7 @@ end-to-end de forma automatizada antes de publicar a imagem.
 - [Executando a aplicação](#executando-a-aplicação)
 - [Pré-requisitos (Kubernetes / kind)](#pré-requisitos-kubernetes--kind)
 - [Quickstart (Kubernetes local via kind)](#quickstart-kubernetes-local-via-kind)
-- [Comandos disponíveis (Makefile)](#comandos-disponíveis-makefile)
+- [Scripts disponíveis](#scripts-disponíveis)
 - [Ambientes: dev vs prod](#ambientes-dev-vs-prod)
 - [Pipeline de CI/CD](#pipeline-de-cicd)
 - [Decisões de projeto](#decisões-de-projeto)
@@ -78,6 +78,7 @@ scripts/
   setup-kind.sh              Cria o cluster kind + instala ingress-nginx
   deploy.sh                  Aplica um overlay e aguarda o rollout
   smoke-test.sh               Valida a aplicação já implantada (Service + Ingress)
+  install-kubeconform.sh       Instala o kubeconform em .bin/ (usado na validação)
   destroy-kind.sh             Destrói o cluster
 
 .github/workflows/ci-cd.yaml  Pipeline: testes → validação de manifests →
@@ -85,7 +86,6 @@ scripts/
 
 Dockerfile                  Imagem final: python:3.12-slim + gunicorn,
                              non-root, com HEALTHCHECK
-Makefile                    Atalhos para todos os comandos acima
 ```
 
 ## Endpoints da API
@@ -152,47 +152,43 @@ local via kind — você vai precisar de:
 - [Docker](https://docs.docker.com/get-docker/)
 - [kind](https://kind.sigs.k8s.io/) `v0.24.0` (o script instala automaticamente se não encontrar)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
-- `make` (opcional, mas recomendado — todos os comandos abaixo têm um alvo no Makefile)
 
-`kubeconform` (usado por `make validate`, incluído no `make ci`) **não**
-precisa ser instalado manualmente — `make validate` baixa o binário sozinho
-em `.bin/kubeconform` na primeira execução, do mesmo jeito que
-`setup-kind.sh` faz com o `kind`.
+Nenhuma outra ferramenta precisa ser instalada manualmente: `kind` (via
+`scripts/setup-kind.sh`) e `kubeconform` (via `scripts/install-kubeconform.sh`,
+usado na validação dos manifests) se auto-instalam na primeira execução,
+sem precisar de `sudo` nem de um gerenciador de pacotes.
 
 Instruções detalhadas de deploy passo a passo (inclusive para um cluster
 Kubernetes real, fora do kind) estão em [`DEPLOY.md`](DEPLOY.md).
 
 ## Quickstart (Kubernetes local via kind)
 
-Reproduz localmente exatamente o que a pipeline de CI faz, em um único comando:
-
-```bash
-make ci
-```
-
-Isso executa, em sequência: testes unitários → cria o cluster kind → builda
-a imagem → carrega no cluster → deploy em `dev` → smoke test → deploy em
-`prod` → smoke test.
-
-Ou passo a passo:
+Os dois overlays já apontam para tags publicadas e públicas no GHCR (`dev`
+usa `latest`, `prod` fixa uma tag por SHA — ver [Ambientes](#ambientes-dev-vs-prod)),
+então o cluster consegue puxar a imagem direto da internet. **Não é
+necessário buildar nada localmente** para reproduzir o deploy:
 
 ```bash
 # 1. Testes
-make test
+pip install -r app/requirements.txt -r app/requirements-dev.txt
+pytest -v
 
-# 2. Subir o cluster kind + ingress-nginx
-make kind-up
+# 2. Validar os manifests (kubeconform se auto-instala em .bin/ na primeira vez)
+./scripts/install-kubeconform.sh
+for t in k8s/base k8s/overlays/dev k8s/overlays/prod; do
+  kubectl kustomize "$t" | ./.bin/kubeconform -strict -summary -
+done
 
-# 3. Buildar a imagem e carregá-la no cluster
-make load
+# 3. Subir o cluster kind + ingress-nginx
+./scripts/setup-kind.sh
 
-# 4. Deploy nos dois ambientes
-make deploy-dev
-make deploy-prod
+# 4. Deploy nos dois ambientes (a imagem é puxada do GHCR)
+./scripts/deploy.sh dev
+./scripts/deploy.sh prod
 
 # 5. Conferir que está tudo no ar
-make smoke-dev
-make smoke-prod
+./scripts/smoke-test.sh dev
+./scripts/smoke-test.sh prod
 ```
 
 Para acessar via Ingress com o host correto, use o header `Host` (não é
@@ -206,26 +202,43 @@ curl -H "Host: prod.case-chatguru.local" http://localhost/info
 Ao terminar:
 
 ```bash
-make kind-down
+./scripts/destroy-kind.sh
 ```
 
-## Comandos disponíveis (Makefile)
+### Testando uma alteração local antes de publicar
 
+Se você mudou o código e quer testar antes de dar `push`, construa a
+imagem e carregue-a manualmente no kind (ver o aviso sobre isolamento do
+kind em [`DEPLOY.md`](DEPLOY.md#3-construindo-e-disponibilizando-a-imagem-para-o-cluster)),
+sobrescrevendo a tag do overlay via `IMAGE=`:
+
+```bash
+docker build -t ghcr.io/wllgomes/case-chatguru:local .
+kind load docker-image ghcr.io/wllgomes/case-chatguru:local --name case-chatguru
+IMAGE=ghcr.io/wllgomes/case-chatguru:local ./scripts/deploy.sh dev
 ```
-$ make help
-  test           Roda os testes unitários
-  validate       Renderiza os overlays e valida contra o schema da API
-  build          Constrói a imagem da aplicação
-  kind-up        Cria o cluster kind e instala o ingress-nginx
-  kind-down      Destrói o cluster kind
-  load           Carrega a imagem construída dentro do cluster kind
-  deploy-dev     Aplica o overlay dev
-  deploy-prod    Aplica o overlay prod
-  smoke-dev      Smoke test do ambiente dev
-  smoke-prod     Smoke test do ambiente prod
-  ci             Pipeline completa local
-  logs-dev       Segue os logs do ambiente dev
-  logs-prod      Segue os logs do ambiente prod
+
+Passo a passo detalhado (inclusive fora do kind) em [`DEPLOY.md`](DEPLOY.md).
+
+## Scripts disponíveis
+
+Sem Makefile de propósito — cada script é independente, chamável direto, e
+é exatamente o que a pipeline de CI roda (nenhuma lógica de orquestração
+duplicada em outro lugar):
+
+| Script | O que faz |
+|---|---|
+| `scripts/setup-kind.sh` | Cria o cluster kind (`kind/kind-config.yaml`) e instala o ingress-nginx |
+| `scripts/install-kubeconform.sh` | Instala o `kubeconform` em `.bin/` (usado na validação dos manifests) |
+| `scripts/deploy.sh <dev\|prod>` | Cria o namespace, aplica o overlay e aguarda o rollout |
+| `scripts/smoke-test.sh <dev\|prod>` | Valida a aplicação já implantada (via Service e via Ingress) |
+| `scripts/destroy-kind.sh` | Destrói o cluster kind |
+
+Logs de um ambiente já implantado:
+
+```bash
+kubectl -n case-chatguru-dev  logs -l app=case-chatguru -f
+kubectl -n case-chatguru-prod logs -l app=case-chatguru -f
 ```
 
 ## Ambientes: dev vs prod
@@ -241,7 +254,15 @@ patches de cada overlay.
 | CPU request/limit | 25m / 100m | 100m / 500m |
 | Memória request/limit | 32Mi / 64Mi | 128Mi / 256Mi |
 | Host do Ingress | `dev.case-chatguru.local` | `prod.case-chatguru.local` |
-| Tag de imagem (default) | `dev-latest` | `1.0.0` |
+| Tag de imagem | `latest` (acompanha `main`) | `sha-2953c21` (fixada) |
+
+`dev` sempre aponta para a última imagem publicada em `main` (`latest`).
+`prod` fixa uma tag imutável por SHA do commit — deliberadamente **não**
+acompanha `main` sozinho. Promover uma nova versão para prod é uma ação
+explícita: escolher a tag `sha-<commit>` já publicada pela pipeline (ver
+[Pipeline de CI/CD](#pipeline-de-cicd)), atualizar `newTag` em
+[`k8s/overlays/prod/kustomization.yaml`](k8s/overlays/prod/kustomization.yaml)
+e comitar — o histórico do git vira o histórico de releases de prod.
 
 ## Pipeline de CI/CD
 
@@ -255,8 +276,8 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
    [kubeconform](https://github.com/yannh/kubeconform). Isso pega erros que
    `kustomize build` sozinho deixa passar (um campo com o nome errado num
    patch, por exemplo, renderiza sem erro e só quebraria no `kubectl apply`).
-3. **`deploy-kind`** — builda a imagem, sobe um cluster kind efêmero
-   (`scripts/setup-kind.sh`, o mesmo script do `make kind-up`), carrega a
+3. **`deploy-kind`** — builda a imagem, sobe um cluster kind efêmero com o
+   mesmo `scripts/setup-kind.sh` executado localmente, carrega a
    imagem via `kind load docker-image` (sem depender de registry — funciona
    igual em PR de fork), faz o deploy real em `dev` e `prod`, roda o smoke
    test em cada um, e por fim **destrói o cluster** (`if: always()`, mesmo
@@ -277,10 +298,14 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
   job de deploy-kind não depende de credenciais nem de rede externa para
   colocar a imagem no cluster, então roda igual em PRs de forks. A imagem só
   vai para o GHCR depois de passar no deploy real.
-- **Imagem fixada por SHA do commit no deploy** (`IMAGE=` em
-  `scripts/deploy.sh`), em vez de depender de tags móveis como
-  `dev-latest`: garante que o smoke test valida exatamente o artefato que
-  acabou de ser construído.
+- **Imagem fixada por SHA do commit no deploy da CI** (`IMAGE=` em
+  `scripts/deploy.sh`), em vez de depender da tag `latest` do overlay:
+  garante que o smoke test valida exatamente o artefato que acabou de ser
+  construído — e não uma versão diferente que porventura já esteja
+  publicada com essa tag.
+- **`prod` pina uma tag por SHA em vez de `latest`**: evita que o
+  ambiente de produção mude sozinho a cada novo `push` em `main` sem uma
+  decisão explícita de promoção (só `dev` acompanha `main` automaticamente).
 - **`kubeconform` além de `kustomize build`**: overlays com Kustomize
   aceitam silenciosamente campos com nome errado dentro de um patch — o
   `kubectl kustomize` renderiza normalmente, e o erro só aparece no
@@ -297,21 +322,30 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
 ## Troubleshooting
 
 **Pods não sobem / `ImagePullBackOff`**
-O kind roda isolado dos containers do host — um `docker build` local não
-fica visível para o cluster automaticamente. A imagem precisa ser
-carregada explicitamente dentro dos nós (detalhes em
-[`DEPLOY.md`](DEPLOY.md#3-construindo-e-disponibilizando-a-imagem-para-o-cluster)):
+Duas causas prováveis:
 
-```bash
-make load   # builda e roda kind load docker-image
-```
+1. Você apontou `IMAGE=` para uma tag que só existe localmente (ex.: uma
+   imagem que você acabou de buildar) sem carregá-la no cluster antes — o
+   kind roda isolado do Docker do host, então `docker build` sozinho não
+   basta (detalhes em
+   [`DEPLOY.md`](DEPLOY.md#3-construindo-e-disponibilizando-a-imagem-para-o-cluster)):
+
+   ```bash
+   docker build -t ghcr.io/wllgomes/case-chatguru:local .
+   kind load docker-image ghcr.io/wllgomes/case-chatguru:local --name case-chatguru
+   ```
+
+2. O nó do kind não tem acesso à internet para puxar a tag publicada
+   (`latest`/`sha-*`) do GHCR — confira com
+   `kubectl describe pod -n <namespace> <pod>` a mensagem exata do evento
+   `Failed`.
 
 **Ingress retorna 404**
 Confira se está enviando o header `Host` correto (`dev.case-chatguru.local`
 ou `prod.case-chatguru.local`) — sem ele o nginx não sabe para qual serviço
 rotear.
 
-**Rollout trava em `make deploy-dev`/`deploy-prod`**
+**Rollout trava em `scripts/deploy.sh dev`/`prod`**
 Investigue o estado dos pods diretamente:
 
 ```bash

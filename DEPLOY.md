@@ -37,7 +37,6 @@ as portas 80/443 mapeadas para o host e instala o ingress-nginx:
 
 ```bash
 ./scripts/setup-kind.sh
-# equivalente a: make kind-up
 ```
 
 Isso cria o cluster `case-chatguru` e aguarda o ingress-nginx controller
@@ -59,21 +58,18 @@ ficar pronto. Ao final, o contexto `kind-case-chatguru` já fica ativo.
 > A saída é sempre uma destas duas:
 > 1. `kind load docker-image <tag> --name case-chatguru` — injeta a
 >    imagem já construída localmente direto no containerd dos nós do
->    cluster (é o que este projeto faz; ver `make load` e o passo abaixo).
+>    cluster (é o que este projeto faz; ver o passo abaixo).
 > 2. Dar `push` da imagem para um registry real (GHCR, Docker Hub, etc.)
 >    e deixar o cluster puxá-la de lá — necessário em qualquer cluster que
 >    **não** seja kind (cloud, minikube com driver diferente, etc.), já
 >    que esses não têm o comando `kind load`.
 
-A imagem já publicada por este projeto está em:
-
-```
-ghcr.io/wllgomes/case-chatguru:latest
-```
-
-Ela é pública — qualquer cluster com acesso à internet consegue puxá-la
-diretamente, sem nenhum passo extra. Isso é o suficiente para a maioria dos
-casos: **pule para a seção 4** se for usar essa imagem.
+Os dois overlays deste repositório já apontam para tags publicadas e
+**públicas** no GHCR — `dev` usa `latest` (acompanha `main`), `prod` fixa
+uma tag imutável por SHA do commit (ver a tabela em
+[README](README.md#ambientes-dev-vs-prod)). Qualquer cluster com acesso à
+internet consegue puxá-las diretamente, sem nenhum passo extra: **pule
+para a seção 4** se for usar essas imagens (o caso comum).
 
 Se preferir construir a imagem você mesmo (por exemplo, para testar uma
 alteração local antes de publicar):
@@ -112,9 +108,14 @@ kubectl kustomize k8s/overlays/prod
 Vale conferir principalmente: `replicas`, `resources`, a tag de imagem
 (`images:` no `kustomization.yaml` de cada overlay) e o `host` do `Ingress`.
 
-`make validate` automatiza isso e ainda valida o YAML renderizado contra o
-schema oficial da API do Kubernetes (via [kubeconform](https://github.com/yannh/kubeconform),
-instalado automaticamente na primeira execução).
+Para validar o YAML renderizado contra o schema oficial da API do
+Kubernetes (o mesmo passo que a pipeline de CI roda), use o
+[kubeconform](https://github.com/yannh/kubeconform):
+
+```bash
+./scripts/install-kubeconform.sh   # instala em .bin/, sem precisar de sudo
+kubectl kustomize k8s/overlays/dev | ./.bin/kubeconform -strict -summary -
+```
 
 ## 5. Aplicando no cluster (`kubectl apply -k`)
 
@@ -122,8 +123,8 @@ O script `scripts/deploy.sh` encapsula os passos abaixo (cria o namespace,
 aplica o overlay e aguarda o rollout) — é a forma recomendada:
 
 ```bash
-./scripts/deploy.sh dev    # ou: make deploy-dev
-./scripts/deploy.sh prod   # ou: make deploy-prod
+./scripts/deploy.sh dev
+./scripts/deploy.sh prod
 ```
 
 Isso é equivalente, no fundo, a:
@@ -228,6 +229,17 @@ As diferenças entre eles (réplicas, resources, host do Ingress, tag de
 imagem) estão declaradas nos respectivos `k8s/overlays/<ambiente>/` — ver
 a tabela comparativa no [README](README.md#ambientes-dev-vs-prod).
 
+**Promovendo uma nova versão para prod**: como `prod` fixa uma tag
+imutável por SHA (em vez de acompanhar `latest` automaticamente), subir
+uma nova versão é uma edição deliberada de
+[`k8s/overlays/prod/kustomization.yaml`](k8s/overlays/prod/kustomization.yaml)
+— troque `images[].newTag` para a tag `sha-<commit>` que a pipeline já
+publicou no GHCR, comite e aplique de novo:
+
+```bash
+kubectl apply -k k8s/overlays/prod
+```
+
 Para remover um ambiente por completo:
 
 ```bash
@@ -239,7 +251,7 @@ kubectl delete namespace case-chatguru-prod
 ## 9. Encerrando o cluster (kind)
 
 ```bash
-./scripts/destroy-kind.sh   # ou: make kind-down
+./scripts/destroy-kind.sh
 ```
 
 ## 10. Observação: deploy em um cluster gerenciado (cloud)

@@ -17,5 +17,5 @@ venv/
 # Docker
 *.log
 
-# Ferramentas instaladas localmente pelo Makefile (make validate)
+# Ferramentas instaladas localmente por scripts/install-kubeconform.sh
 .bin/

@@ -8,6 +8,5 @@ venv
 k8s
 kind
 scripts
-Makefile
 README.md
 DEPLOY.md
