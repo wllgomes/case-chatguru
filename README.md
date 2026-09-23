@@ -11,8 +11,9 @@ end-to-end de forma automatizada antes de publicar a imagem.
 - [Arquitetura](#arquitetura)
 - [Estrutura do projeto](#estrutura-do-projeto)
 - [Endpoints da API](#endpoints-da-api)
-- [Pré-requisitos](#pré-requisitos)
-- [Quickstart](#quickstart)
+- [Executando a aplicação](#executando-a-aplicação)
+- [Pré-requisitos (Kubernetes / kind)](#pré-requisitos-kubernetes--kind)
+- [Quickstart (Kubernetes local via kind)](#quickstart-kubernetes-local-via-kind)
 - [Comandos disponíveis (Makefile)](#comandos-disponíveis-makefile)
 - [Ambientes: dev vs prod](#ambientes-dev-vs-prod)
 - [Pipeline de CI/CD](#pipeline-de-cicd)
@@ -95,14 +96,68 @@ Makefile                    Atalhos para todos os comandos acima
 | `GET /health` / `/healthz` | Health check usado pelos probes do Kubernetes |
 | `GET /info` | Versão da aplicação, ambiente (`APP_ENV`) e hostname do pod |
 
-## Pré-requisitos
+## Executando a aplicação
+
+Duas formas simples de rodar só a API, sem precisar de Kubernetes.
+
+### Localmente (Python)
+
+```bash
+python3 -m venv app/.venv
+source app/.venv/bin/activate
+pip install -r app/requirements.txt -r app/requirements-dev.txt
+
+APP_VERSION=1.0.0 APP_ENV=local python app/main.py
+```
+
+A API sobe em `http://localhost:8080` (servidor de desenvolvimento do Flask).
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/info
+```
+
+### Via Docker
+
+```bash
+docker build -t case-chatguru:local .
+
+docker run --rm -p 8080:8080 \
+  -e APP_VERSION=1.0.0 \
+  -e APP_ENV=docker-local \
+  case-chatguru:local
+```
+
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/info
+```
+
+`APP_VERSION` e `APP_ENV` são lidas de variáveis de ambiente (em Kubernetes,
+vêm do `ConfigMap` — ver [`k8s/base/configmap.yaml`](k8s/base/configmap.yaml))
+e retornadas pelo endpoint `/info`, junto com o hostname do processo/pod.
+
+### Rodando os testes
+
+```bash
+pip install -r app/requirements.txt -r app/requirements-dev.txt
+pytest -v
+```
+
+## Pré-requisitos (Kubernetes / kind)
+
+Para o restante deste README — subir a aplicação em um cluster Kubernetes
+local via kind — você vai precisar de:
 
 - [Docker](https://docs.docker.com/get-docker/)
 - [kind](https://kind.sigs.k8s.io/) `v0.24.0` (o script instala automaticamente se não encontrar)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
 - `make` (opcional, mas recomendado — todos os comandos abaixo têm um alvo no Makefile)
 
-## Quickstart
+Instruções detalhadas de deploy passo a passo (inclusive para um cluster
+Kubernetes real, fora do kind) estão em [`DEPLOY.md`](DEPLOY.md).
+
+## Quickstart (Kubernetes local via kind)
 
 Reproduz localmente exatamente o que a pipeline de CI faz, em um único comando:
 
