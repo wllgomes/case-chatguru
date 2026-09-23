@@ -10,12 +10,9 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  # Nome usado pelas tags locais dentro do kind, onde não há registry.
   LOCAL_IMAGE: ghcr.io/wllgomes/case-chatguru
   KIND_CLUSTER: case-chatguru
 
-# Um push novo na mesma branch/PR cancela a execução anterior: evita gastar
-# runner em commits que já foram substituídos.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -56,10 +53,6 @@ jobs:
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
           sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
 
-      # kustomize build sozinho aceita campos inválidos (ex.: uma chave
-      # digitada errada num patch renderiza sem erro e o apply falha só no
-      # cluster). kubeconform valida o YAML final contra o schema da API,
-      # então esse tipo de erro para na pipeline.
       - name: Validar overlays contra o schema da API do Kubernetes
         run: |
           for target in k8s/base k8s/overlays/dev k8s/overlays/prod; do
@@ -78,9 +71,6 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # A imagem é construída uma única vez e carregada no daemon local
-      # (load: true) para ser injetada no kind — não passa por registry,
-      # então este job roda igual em PRs de forks, sem credencial nenhuma.
       - name: Build da imagem
         uses: docker/build-push-action@v6
         with:
@@ -90,8 +80,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Mesmo script que o avaliador roda localmente (`make kind-up`):
-      # cria o cluster a partir de kind/kind-config.yaml e sobe o ingress-nginx.
       - name: Criar cluster kind + ingress-nginx
         run: ./scripts/setup-kind.sh
 
@@ -116,8 +104,6 @@ jobs:
       - name: Smoke test do ambiente prod
         run: ./scripts/smoke-test.sh prod
 
-      # Só roda quando algum passo acima falha: deixa no log do Actions tudo
-      # que seria preciso para diagnosticar, sem ter que reproduzir local.
       - name: Coletar diagnóstico em caso de falha
         if: failure()
         run: |
@@ -144,7 +130,6 @@ jobs:
     name: Publicar imagem no GHCR
     needs: [deploy-kind]
     runs-on: ubuntu-latest
-    # A imagem só é publicada depois de provar que ela sobe num cluster real.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -171,8 +156,6 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      # O cache do buildx foi populado pelo job de build, então aqui a imagem
-      # é reaproveitada em vez de recompilada.
       - name: Build e push
         uses: docker/build-push-action@v6
         with:

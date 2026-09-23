@@ -49,11 +49,13 @@ done
 
 check "GET /health responde status ok" \
   '"status":"ok"' \
-  "$(curl -sS --max-time 5 "http://localhost:$LOCAL_PORT/health" || echo '<sem resposta>')"
+  "$(curl -sS --max-time 5 --retry 3 --retry-delay 1 --retry-connrefused \
+     "http://localhost:$LOCAL_PORT/health" || echo '<sem resposta>')"
 
 check "GET /info reporta environment=$ENVIRONMENT" \
   "\"environment\":\"$ENVIRONMENT\"" \
-  "$(curl -sS --max-time 5 "http://localhost:$LOCAL_PORT/info" || echo '<sem resposta>')"
+  "$(curl -sS --max-time 5 --retry 3 --retry-delay 1 --retry-connrefused \
+     "http://localhost:$LOCAL_PORT/info" || echo '<sem resposta>')"
 
 kill "$PF_PID" 2>/dev/null || true
 trap - EXIT
@@ -66,11 +68,13 @@ done
 
 check "GET /health através do Ingress" \
   '"status":"ok"' \
-  "$(curl -sS --max-time 5 -H "Host: $INGRESS_HOST" "$INGRESS_URL/health" || echo '<sem resposta>')"
+  "$(curl -sS --max-time 5 --retry 3 --retry-delay 1 --retry-connrefused \
+     -H "Host: $INGRESS_HOST" "$INGRESS_URL/health" || echo '<sem resposta>')"
 
 check "GET /info através do Ingress preserva o path" \
   "\"environment\":\"$ENVIRONMENT\"" \
-  "$(curl -sS --max-time 5 -H "Host: $INGRESS_HOST" "$INGRESS_URL/info" || echo '<sem resposta>')"
+  "$(curl -sS --max-time 5 --retry 3 --retry-delay 1 --retry-connrefused \
+     -H "Host: $INGRESS_HOST" "$INGRESS_URL/info" || echo '<sem resposta>')"
 
 echo ""
 if (( FAILURES > 0 )); then
