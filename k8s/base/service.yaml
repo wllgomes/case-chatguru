@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: case-chatguru
+  labels:
+    app: case-chatguru
+spec:
+  type: ClusterIP
+  selector:
+    app: case-chatguru
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

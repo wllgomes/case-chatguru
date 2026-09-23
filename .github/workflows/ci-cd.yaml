@@ -1,0 +1,184 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Nome usado pelas tags locais dentro do kind, onde não há registry.
+  LOCAL_IMAGE: ghcr.io/wllgomes/case-chatguru
+  KIND_CLUSTER: case-chatguru
+
+# Um push novo na mesma branch/PR cancela a execução anterior: evita gastar
+# runner em commits que já foram substituídos.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Testes unitários
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            app/requirements.txt
+            app/requirements-dev.txt
+
+      - name: Instalar dependências
+        run: pip install -r app/requirements.txt -r app/requirements-dev.txt
+
+      - name: Rodar pytest
+        run: pytest -v
+
+  validate-manifests:
+    name: Validar manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-kubectl@v4
+
+      - name: Instalar kubeconform
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+      # kustomize build sozinho aceita campos inválidos (ex.: uma chave
+      # digitada errada num patch renderiza sem erro e o apply falha só no
+      # cluster). kubeconform valida o YAML final contra o schema da API,
+      # então esse tipo de erro para na pipeline.
+      - name: Validar overlays contra o schema da API do Kubernetes
+        run: |
+          for target in k8s/base k8s/overlays/dev k8s/overlays/prod; do
+            echo "::group::$target"
+            kubectl kustomize "$target" \
+              | kubeconform -strict -summary -kubernetes-version 1.31.0 -
+            echo "::endgroup::"
+          done
+
+  deploy-kind:
+    name: Deploy end-to-end no kind
+    needs: [test, validate-manifests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # A imagem é construída uma única vez e carregada no daemon local
+      # (load: true) para ser injetada no kind — não passa por registry,
+      # então este job roda igual em PRs de forks, sem credencial nenhuma.
+      - name: Build da imagem
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.LOCAL_IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Mesmo script que o avaliador roda localmente (`make kind-up`):
+      # cria o cluster a partir de kind/kind-config.yaml e sobe o ingress-nginx.
+      - name: Criar cluster kind + ingress-nginx
+        run: ./scripts/setup-kind.sh
+
+      - name: Carregar a imagem no cluster kind
+        run: |
+          kind load docker-image "${LOCAL_IMAGE}:${GITHUB_SHA}" \
+            --name "$KIND_CLUSTER"
+
+      - name: Deploy no ambiente dev
+        env:
+          IMAGE: ${{ env.LOCAL_IMAGE }}:${{ github.sha }}
+        run: ./scripts/deploy.sh dev
+
+      - name: Smoke test do ambiente dev
+        run: ./scripts/smoke-test.sh dev
+
+      - name: Deploy no ambiente prod
+        env:
+          IMAGE: ${{ env.LOCAL_IMAGE }}:${{ github.sha }}
+        run: ./scripts/deploy.sh prod
+
+      - name: Smoke test do ambiente prod
+        run: ./scripts/smoke-test.sh prod
+
+      # Só roda quando algum passo acima falha: deixa no log do Actions tudo
+      # que seria preciso para diagnosticar, sem ter que reproduzir local.
+      - name: Coletar diagnóstico em caso de falha
+        if: failure()
+        run: |
+          set +e
+          echo "::group::Nodes"
+          kubectl get nodes -o wide
+          echo "::endgroup::"
+          for ns in case-chatguru-dev case-chatguru-prod ingress-nginx; do
+            echo "::group::Namespace $ns"
+            kubectl -n "$ns" get all,ingress,configmap
+            kubectl -n "$ns" describe pods
+            kubectl -n "$ns" logs -l app=case-chatguru --tail=100 --all-containers
+            echo "::endgroup::"
+          done
+          echo "::group::Eventos do cluster"
+          kubectl get events -A --sort-by=.lastTimestamp | tail -50
+          echo "::endgroup::"
+
+      - name: Destruir cluster kind
+        if: always()
+        run: ./scripts/destroy-kind.sh
+
+  publish:
+    name: Publicar imagem no GHCR
+    needs: [deploy-kind]
+    runs-on: ubuntu-latest
+    # A imagem só é publicada depois de provar que ela sobe num cluster real.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Autenticar no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calcular tags e labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # O cache do buildx foi populado pelo job de build, então aqui a imagem
+      # é reaproveitada em vez de recompilada.
+      - name: Build e push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

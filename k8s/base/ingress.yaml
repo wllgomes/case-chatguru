@@ -1,0 +1,17 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: case-chatguru
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: case-chatguru.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: case-chatguru
+                port:
+                  number: 80

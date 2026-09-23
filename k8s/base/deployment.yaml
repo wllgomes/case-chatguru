@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: case-chatguru
+  labels:
+    app: case-chatguru
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: case-chatguru
+  template:
+    metadata:
+      labels:
+        app: case-chatguru
+    spec:
+      containers:
+        - name: case-chatguru
+          image: ghcr.io/wllgomes/case-chatguru:latest
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: case-chatguru-config
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
