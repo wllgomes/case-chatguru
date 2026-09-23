@@ -13,9 +13,10 @@ test: ## Roda os testes unitários
 	pytest -v
 
 validate: ## Renderiza os overlays e valida contra o schema da API
+	@./scripts/install-kubeconform.sh
 	@for target in k8s/base k8s/overlays/dev k8s/overlays/prod; do \
 		echo "--> $$target"; \
-		kubectl kustomize $$target | kubeconform -strict -summary - || exit 1; \
+		kubectl kustomize $$target | ./.bin/kubeconform -strict -summary - || exit 1; \
 	done
 
 build: ## Constrói a imagem da aplicação

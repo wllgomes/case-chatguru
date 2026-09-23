@@ -26,23 +26,23 @@ end-to-end de forma automatizada antes de publicar a imagem.
 Dev machine / GitHub Actions runner
         │
         │ docker build
-        ▼
+        v
   ghcr.io/wllgomes/case-chatguru (imagem)
         │
         │ kind load docker-image
-        ▼
+        v
 ┌─────────────────────────── cluster kind ───────────────────────────┐
-│                                                                     │
-│   ingress-nginx (controller)                                       │
-│        │                                                           │
-│        ├── Host: dev.case-chatguru.local  ──► ns case-chatguru-dev │
-│        │                                        Deployment (1 pod) │
-│        │                                        Service ClusterIP  │
-│        │                                                           │
-│        └── Host: prod.case-chatguru.local ──► ns case-chatguru-prod│
-│                                                 Deployment (2 pods) │
-│                                                 Service ClusterIP   │
-└─────────────────────────────────────────────────────────────────────┘
+│                                                                    │
+│  ingress-nginx (controller)                                        │
+│       │                                                            │
+│       ├── Host: dev.case-chatguru.local  --> ns case-chatguru-dev  │
+│       │                                       Deployment (1 pod)   │
+│       │                                       Service ClusterIP    │
+│       │                                                            │
+│       └── Host: prod.case-chatguru.local --> ns case-chatguru-prod │
+│                                               Deployment (2 pods)  │
+│                                               Service ClusterIP    │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
 A aplicação é a mesma imagem em qualquer ambiente — o que muda entre `dev` e
@@ -153,6 +153,11 @@ local via kind — você vai precisar de:
 - [kind](https://kind.sigs.k8s.io/) `v0.24.0` (o script instala automaticamente se não encontrar)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
 - `make` (opcional, mas recomendado — todos os comandos abaixo têm um alvo no Makefile)
+
+`kubeconform` (usado por `make validate`, incluído no `make ci`) **não**
+precisa ser instalado manualmente — `make validate` baixa o binário sozinho
+em `.bin/kubeconform` na primeira execução, do mesmo jeito que
+`setup-kind.sh` faz com o `kind`.
 
 Instruções detalhadas de deploy passo a passo (inclusive para um cluster
 Kubernetes real, fora do kind) estão em [`DEPLOY.md`](DEPLOY.md).
@@ -292,8 +297,10 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
 ## Troubleshooting
 
 **Pods não sobem / `ImagePullBackOff`**
-A imagem precisa estar carregada dentro do cluster kind (ele não enxerga o
-Docker local nem o GHCR automaticamente):
+O kind roda isolado dos containers do host — um `docker build` local não
+fica visível para o cluster automaticamente. A imagem precisa ser
+carregada explicitamente dentro dos nós (detalhes em
+[`DEPLOY.md`](DEPLOY.md#3-construindo-e-disponibilizando-a-imagem-para-o-cluster)):
 
 ```bash
 make load   # builda e roda kind load docker-image

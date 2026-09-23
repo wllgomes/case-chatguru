@@ -45,6 +45,26 @@ ficar pronto. Ao final, o contexto `kind-case-chatguru` já fica ativo.
 
 ## 3. Construindo e disponibilizando a imagem para o cluster
 
+> **⚠️ Ponto importante sobre o kind:** um cluster kind roda totalmente
+> isolado dentro de containers Docker (cada "nó" é, na prática, um
+> container) — ele **não** compartilha o daemon Docker do host, nem o
+> cache de imagens locais, nem tem acesso a registries privados por
+> padrão. Ou seja: rodar `docker build` na sua máquina deixa a imagem
+> disponível para o `docker run` do host, mas o **containerd de dentro do
+> cluster kind não enxerga essa imagem**. Se você aplicar os manifests
+> apontando para uma tag que só existe localmente, o Pod fica preso em
+> `ImagePullBackOff` — o `kubectl describe pod` mostra algo como
+> `Failed to pull image ... not found`.
+>
+> A saída é sempre uma destas duas:
+> 1. `kind load docker-image <tag> --name case-chatguru` — injeta a
+>    imagem já construída localmente direto no containerd dos nós do
+>    cluster (é o que este projeto faz; ver `make load` e o passo abaixo).
+> 2. Dar `push` da imagem para um registry real (GHCR, Docker Hub, etc.)
+>    e deixar o cluster puxá-la de lá — necessário em qualquer cluster que
+>    **não** seja kind (cloud, minikube com driver diferente, etc.), já
+>    que esses não têm o comando `kind load`.
+
 A imagem já publicada por este projeto está em:
 
 ```
@@ -62,9 +82,8 @@ alteração local antes de publicar):
 docker build -t ghcr.io/wllgomes/case-chatguru:local .
 ```
 
-Em um cluster **kind**, a imagem local precisa ser carregada manualmente
-dentro dos nós (kind não enxerga o Docker do host nem registries privados
-sem configuração extra):
+Em um cluster **kind**, carregue a imagem local nos nós (ver o ponto
+importante acima):
 
 ```bash
 kind load docker-image ghcr.io/wllgomes/case-chatguru:local --name case-chatguru
@@ -92,6 +111,10 @@ kubectl kustomize k8s/overlays/prod
 
 Vale conferir principalmente: `replicas`, `resources`, a tag de imagem
 (`images:` no `kustomization.yaml` de cada overlay) e o `host` do `Ingress`.
+
+`make validate` automatiza isso e ainda valida o YAML renderizado contra o
+schema oficial da API do Kubernetes (via [kubeconform](https://github.com/yannh/kubeconform),
+instalado automaticamente na primeira execução).
 
 ## 5. Aplicando no cluster (`kubectl apply -k`)
 

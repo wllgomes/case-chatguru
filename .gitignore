@@ -16,3 +16,6 @@ venv/
 
 # Docker
 *.log
+
+# Ferramentas instaladas localmente pelo Makefile (make validate)
+.bin/
