@@ -51,6 +51,20 @@ fi
 echo "Instalando ingress-nginx (${INGRESS_NGINX_VERSION})..."
 kubectl apply -f "https://raw.githubusercontent.com/kubernetes/ingress-nginx/${INGRESS_NGINX_VERSION}/deploy/static/provider/kind/deploy.yaml"
 
+echo "Aguardando os pods do ingress-nginx serem criados..."
+# 'kubectl wait' falha de imediato com "no matching resources found" se o
+# seletor ainda não bate com nenhum pod (não fica esperando ele aparecer).
+# Logo após o apply os pods ainda não existem, então esperamos ativamente
+# antes de usar o 'wait' de verdade para a condição de "ready".
+for _ in $(seq 1 30); do
+  if kubectl get pods -n ingress-nginx \
+    -l app.kubernetes.io/component=controller \
+    --no-headers 2>/dev/null | grep -q .; then
+    break
+  fi
+  sleep 2
+done
+
 echo "Aguardando o ingress-nginx controller ficar pronto..."
 kubectl wait --namespace ingress-nginx \
   --for=condition=ready pod \
