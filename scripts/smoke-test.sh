@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Uso: ./scripts/smoke-test.sh <dev|prod>
+# Uso: ./scripts/smoke-test.sh <stg|prod>
 #
 # Valida a aplicação já implantada de duas formas complementares:
 #   1. Direto no Service (via port-forward)  -> prova que o Pod serve tráfego.
@@ -13,8 +13,8 @@ set -euo pipefail
 ENVIRONMENT="${1:-}"
 INGRESS_URL="${INGRESS_URL:-http://localhost}"
 
-if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "prod" ]]; then
-  echo "Uso: $0 <dev|prod>" >&2
+if [[ "$ENVIRONMENT" != "stg" && "$ENVIRONMENT" != "prod" ]]; then
+  echo "Uso: $0 <stg|prod>" >&2
   exit 1
 fi
 

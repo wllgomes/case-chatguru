@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Uso: ./scripts/deploy.sh <dev|prod>
+# Uso: ./scripts/deploy.sh <stg|prod>
 #
 # Variáveis opcionais:
 #   IMAGE   - sobrescreve a imagem do container (ex.: ghcr.io/org/app:abc1234).
 #             Usado pela pipeline para fixar o deploy no SHA do commit, em vez
-#             de confiar em tags móveis como 'dev-latest'.
+#             de confiar em tags móveis como 'stg-latest'.
 #   TIMEOUT - timeout do rollout (default: 120s).
 
 ENVIRONMENT="${1:-}"
 TIMEOUT="${TIMEOUT:-120s}"
 
-if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "prod" ]]; then
-  echo "Uso: $0 <dev|prod>" >&2
+if [[ "$ENVIRONMENT" != "stg" && "$ENVIRONMENT" != "prod" ]]; then
+  echo "Uso: $0 <stg|prod>" >&2
   exit 1
 fi
 

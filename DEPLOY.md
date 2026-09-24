@@ -3,7 +3,7 @@
 Este documento descreve, do zero, como subir o `case-chatguru` em um cluster
 Kubernetes: pré-requisitos, comandos de `kustomize build` / `kubectl apply`,
 como acessar a aplicação depois de publicada e como trocar de overlay
-(`dev` ↔ `prod`).
+(`stg` ↔ `prod`).
 
 Os comandos abaixo funcionam contra **qualquer** cluster Kubernetes — o
 guia usa [kind](https://kind.sigs.k8s.io/) como exemplo por ser o mais
@@ -65,9 +65,9 @@ ficar pronto. Ao final, o contexto `kind-case-chatguru` já fica ativo.
 >    que esses não têm o comando `kind load`.
 
 Os dois overlays deste repositório já apontam para tags publicadas e
-**públicas** no GHCR — `dev` usa `latest` (acompanha `main`), `prod` fixa
+**públicas** no GHCR — `stg` usa `latest` (acompanha `main`), `prod` fixa
 uma tag imutável por SHA do commit (ver a tabela em
-[README](README.md#ambientes-dev-vs-prod)). Qualquer cluster com acesso à
+[README](README.md#ambientes-stg-vs-prod)). Qualquer cluster com acesso à
 internet consegue puxá-las diretamente, sem nenhum passo extra: **pule
 para a seção 4** se for usar essas imagens (o caso comum).
 
@@ -98,8 +98,8 @@ aplicar no cluster — nenhum comando aqui altera o cluster:
 # Base "crua", sem overlay (não é o que se aplica em uso real)
 kubectl kustomize k8s/base
 
-# Overlay de dev — o que de fato é aplicado no ambiente dev
-kubectl kustomize k8s/overlays/dev
+# Overlay de stg — o que de fato é aplicado no ambiente stg
+kubectl kustomize k8s/overlays/stg
 
 # Overlay de prod — o que de fato é aplicado no ambiente prod
 kubectl kustomize k8s/overlays/prod
@@ -114,7 +114,7 @@ Kubernetes (o mesmo passo que a pipeline de CI roda), use o
 
 ```bash
 ./scripts/install-kubeconform.sh   # instala em .bin/, sem precisar de sudo
-kubectl kustomize k8s/overlays/dev | ./.bin/kubeconform -strict -summary -
+kubectl kustomize k8s/overlays/stg | ./.bin/kubeconform -strict -summary -
 ```
 
 ## 5. Aplicando no cluster (`kubectl apply -k`)
@@ -123,53 +123,53 @@ O script `scripts/deploy.sh` encapsula os passos abaixo (cria o namespace,
 aplica o overlay e aguarda o rollout) — é a forma recomendada:
 
 ```bash
-./scripts/deploy.sh dev
+./scripts/deploy.sh stg
 ./scripts/deploy.sh prod
 ```
 
 Isso é equivalente, no fundo, a:
 
 ```bash
-kubectl create namespace case-chatguru-dev --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -k k8s/overlays/dev
-kubectl -n case-chatguru-dev rollout status deployment/dev-case-chatguru --timeout=120s
+kubectl create namespace case-chatguru-stg --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -k k8s/overlays/stg
+kubectl -n case-chatguru-stg rollout status deployment/stg-case-chatguru --timeout=120s
 ```
 
-(troque `dev` por `prod` e `dev-case-chatguru` por `prod-case-chatguru` para
+(troque `stg` por `prod` e `stg-case-chatguru` por `prod-case-chatguru` para
 o outro ambiente).
 
 Para fixar uma imagem específica (por exemplo, a que você acabou de
 construir/carregar no passo 3), exporte `IMAGE` antes de rodar o script:
 
 ```bash
-IMAGE=ghcr.io/wllgomes/case-chatguru:local ./scripts/deploy.sh dev
+IMAGE=ghcr.io/wllgomes/case-chatguru:local ./scripts/deploy.sh stg
 ```
 
 ## 6. Conferindo que subiu
 
 ```bash
-kubectl -n case-chatguru-dev get deploy,pods,svc,ingress
+kubectl -n case-chatguru-stg get deploy,pods,svc,ingress
 ```
 
 Saída esperada (resumida):
 
 ```
 NAME                                READY   UP-TO-DATE   AVAILABLE
-deployment.apps/dev-case-chatguru   1/1     1            1
+deployment.apps/stg-case-chatguru   1/1     1            1
 
 NAME                                     READY   STATUS
-pod/dev-case-chatguru-xxxxxxxxxx-xxxxx   1/1     Running
+pod/stg-case-chatguru-xxxxxxxxxx-xxxxx   1/1     Running
 
 NAME                        TYPE        CLUSTER-IP
-service/dev-case-chatguru   ClusterIP   10.x.x.x
+service/stg-case-chatguru   ClusterIP   10.x.x.x
 
 NAME                                          CLASS   HOSTS
-ingress.networking.k8s.io/dev-case-chatguru   nginx   dev.case-chatguru.local
+ingress.networking.k8s.io/stg-case-chatguru   nginx   stg.case-chatguru.local
 ```
 
 ## 7. Acessando a aplicação depois de publicada
 
-O host configurado no Ingress é fictício (`dev.case-chatguru.local` /
+O host configurado no Ingress é fictício (`stg.case-chatguru.local` /
 `prod.case-chatguru.local`), então não existe DNS público apontando para
 ele. Duas formas de acessar:
 
@@ -178,8 +178,8 @@ sistema; funciona em qualquer cluster onde você tenha o IP/host do Ingress):
 
 ```bash
 # kind local: o ingress-nginx escuta em localhost:80/443
-curl -H "Host: dev.case-chatguru.local"  http://localhost/health
-curl -H "Host: dev.case-chatguru.local"  http://localhost/info
+curl -H "Host: stg.case-chatguru.local"  http://localhost/health
+curl -H "Host: stg.case-chatguru.local"  http://localhost/info
 
 curl -H "Host: prod.case-chatguru.local" http://localhost/health
 curl -H "Host: prod.case-chatguru.local" http://localhost/info
@@ -191,13 +191,13 @@ Load Balancer do ingress controller:
 ```bash
 INGRESS_IP=$(kubectl -n ingress-nginx get svc ingress-nginx-controller \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-curl -H "Host: dev.case-chatguru.local" "http://$INGRESS_IP/info"
+curl -H "Host: stg.case-chatguru.local" "http://$INGRESS_IP/info"
 ```
 
 **Opção B — editar `/etc/hosts`** (para navegar pelo browser):
 
 ```
-127.0.0.1  dev.case-chatguru.local prod.case-chatguru.local
+127.0.0.1  stg.case-chatguru.local prod.case-chatguru.local
 ```
 
 (aponte para o IP real do Ingress em vez de `127.0.0.1` caso não seja um
@@ -206,28 +206,28 @@ cluster local).
 **Opção C — sem depender do Ingress**, direto no Service, útil para depurar:
 
 ```bash
-kubectl -n case-chatguru-dev port-forward svc/dev-case-chatguru 8080:80
+kubectl -n case-chatguru-stg port-forward svc/stg-case-chatguru 8080:80
 curl http://localhost:8080/info
 ```
 
-O script `scripts/smoke-test.sh dev` (ou `prod`) automatiza as opções A e C
+O script `scripts/smoke-test.sh stg` (ou `prod`) automatiza as opções A e C
 com verificações de conteúdo da resposta.
 
-## 8. Trocando de overlay (dev ↔ prod)
+## 8. Trocando de overlay (stg ↔ prod)
 
-Não existe um "trocar" no sentido de alternar estado — `dev` e `prod` são
+Não existe um "trocar" no sentido de alternar estado — `stg` e `prod` são
 namespaces e recursos **independentes**, nascidos do mesmo `k8s/base`. Os
 dois podem coexistir no mesmo cluster ao mesmo tempo. Para atuar em um ou
 outro, basta apontar o comando para o overlay correspondente:
 
 ```bash
-kubectl apply -k k8s/overlays/dev    # cria/atualiza o ambiente dev
+kubectl apply -k k8s/overlays/stg    # cria/atualiza o ambiente stg
 kubectl apply -k k8s/overlays/prod   # cria/atualiza o ambiente prod
 ```
 
 As diferenças entre eles (réplicas, resources, host do Ingress, tag de
 imagem) estão declaradas nos respectivos `k8s/overlays/<ambiente>/` — ver
-a tabela comparativa no [README](README.md#ambientes-dev-vs-prod).
+a tabela comparativa no [README](README.md#ambientes-stg-vs-prod).
 
 **Promovendo uma nova versão para prod**: como `prod` fixa uma tag
 imutável por SHA (em vez de acompanhar `latest` automaticamente), subir
@@ -243,7 +243,7 @@ kubectl apply -k k8s/overlays/prod
 Para remover um ambiente por completo:
 
 ```bash
-kubectl delete namespace case-chatguru-dev
+kubectl delete namespace case-chatguru-stg
 # ou
 kubectl delete namespace case-chatguru-prod
 ```

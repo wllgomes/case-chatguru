@@ -55,7 +55,7 @@ jobs:
 
       - name: Validar overlays contra o schema da API do Kubernetes
         run: |
-          for target in k8s/base k8s/overlays/dev k8s/overlays/prod; do
+          for target in k8s/base k8s/overlays/stg k8s/overlays/prod; do
             echo "::group::$target"
             kubectl kustomize "$target" \
               | kubeconform -strict -summary -kubernetes-version 1.31.0 -
@@ -88,13 +88,13 @@ jobs:
           kind load docker-image "${LOCAL_IMAGE}:${GITHUB_SHA}" \
             --name "$KIND_CLUSTER"
 
-      - name: Deploy no ambiente dev
+      - name: Deploy no ambiente stg
         env:
           IMAGE: ${{ env.LOCAL_IMAGE }}:${{ github.sha }}
-        run: ./scripts/deploy.sh dev
+        run: ./scripts/deploy.sh stg
 
-      - name: Smoke test do ambiente dev
-        run: ./scripts/smoke-test.sh dev
+      - name: Smoke test do ambiente stg
+        run: ./scripts/smoke-test.sh stg
 
       - name: Deploy no ambiente prod
         env:
@@ -111,7 +111,7 @@ jobs:
           echo "::group::Nodes"
           kubectl get nodes -o wide
           echo "::endgroup::"
-          for ns in case-chatguru-dev case-chatguru-prod ingress-nginx; do
+          for ns in case-chatguru-stg case-chatguru-prod ingress-nginx; do
             echo "::group::Namespace $ns"
             kubectl -n "$ns" get all,ingress,configmap
             kubectl -n "$ns" describe pods

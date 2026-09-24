@@ -4,7 +4,7 @@ metadata:
   name: case-chatguru
 spec:
   rules:
-    - host: dev.case-chatguru.local
+    - host: stg.case-chatguru.local
       http:
         paths:
           - path: /

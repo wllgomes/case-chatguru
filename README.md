@@ -2,7 +2,7 @@
 
 Case técnico: API Flask simples, containerizada e implantada em Kubernetes
 (cluster local via [kind](https://kind.sigs.k8s.io/)), com dois ambientes
-(`dev` e `prod`) gerenciados via [Kustomize](https://kustomize.io/) e uma
+(`stg` e `prod`) gerenciados via [Kustomize](https://kustomize.io/) e uma
 pipeline de CI/CD no GitHub Actions que testa, valida, builda e faz o deploy
 end-to-end de forma automatizada antes de publicar a imagem.
 
@@ -15,9 +15,10 @@ end-to-end de forma automatizada antes de publicar a imagem.
 - [Pré-requisitos (Kubernetes / kind)](#pré-requisitos-kubernetes--kind)
 - [Quickstart (Kubernetes local via kind)](#quickstart-kubernetes-local-via-kind)
 - [Scripts disponíveis](#scripts-disponíveis)
-- [Ambientes: dev vs prod](#ambientes-dev-vs-prod)
+- [Ambientes: stg vs prod](#ambientes-stg-vs-prod)
 - [Pipeline de CI/CD](#pipeline-de-cicd)
 - [Decisões de projeto](#decisões-de-projeto)
+- [Evolução futura: promoção por branch](#evolução-futura-promoção-por-branch)
 - [Troubleshooting](#troubleshooting)
 
 ## Arquitetura
@@ -35,7 +36,7 @@ Dev machine / GitHub Actions runner
 │                                                                    │
 │  ingress-nginx (controller)                                        │
 │       │                                                            │
-│       ├── Host: dev.case-chatguru.local  --> ns case-chatguru-dev  │
+│       ├── Host: stg.case-chatguru.local  --> ns case-chatguru-stg  │
 │       │                                       Deployment (1 pod)   │
 │       │                                       Service ClusterIP    │
 │       │                                                            │
@@ -45,7 +46,7 @@ Dev machine / GitHub Actions runner
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-A aplicação é a mesma imagem em qualquer ambiente — o que muda entre `dev` e
+A aplicação é a mesma imagem em qualquer ambiente — o que muda entre `stg` e
 `prod` é só configuração (via Kustomize overlays): número de réplicas,
 requests/limits de CPU/memória, `APP_ENV` e o host do Ingress.
 
@@ -66,8 +67,8 @@ k8s/
     ingress.yaml                  Ingress (nginx)
     kustomization.yaml
   overlays/
-    dev/                       Patches: 1 réplica, resources menores,
-                                host dev.case-chatguru.local
+    stg/                       Patches: 1 réplica, resources menores,
+                                host stg.case-chatguru.local
     prod/                      Patches: 2 réplicas, resources maiores,
                                 host prod.case-chatguru.local
 
@@ -163,8 +164,8 @@ Kubernetes real, fora do kind) estão em [`DEPLOY.md`](DEPLOY.md).
 
 ## Quickstart (Kubernetes local via kind)
 
-Os dois overlays já apontam para tags publicadas e públicas no GHCR (`dev`
-usa `latest`, `prod` fixa uma tag por SHA — ver [Ambientes](#ambientes-dev-vs-prod)),
+Os dois overlays já apontam para tags publicadas e públicas no GHCR (`stg`
+usa `latest`, `prod` fixa uma tag por SHA — ver [Ambientes](#ambientes-stg-vs-prod)),
 então o cluster consegue puxar a imagem direto da internet. **Não é
 necessário buildar nada localmente** para reproduzir o deploy:
 
@@ -175,7 +176,7 @@ pytest -v
 
 # 2. Validar os manifests (kubeconform se auto-instala em .bin/ na primeira vez)
 ./scripts/install-kubeconform.sh
-for t in k8s/base k8s/overlays/dev k8s/overlays/prod; do
+for t in k8s/base k8s/overlays/stg k8s/overlays/prod; do
   kubectl kustomize "$t" | ./.bin/kubeconform -strict -summary -
 done
 
@@ -183,11 +184,11 @@ done
 ./scripts/setup-kind.sh
 
 # 4. Deploy nos dois ambientes (a imagem é puxada do GHCR)
-./scripts/deploy.sh dev
+./scripts/deploy.sh stg
 ./scripts/deploy.sh prod
 
 # 5. Conferir que está tudo no ar
-./scripts/smoke-test.sh dev
+./scripts/smoke-test.sh stg
 ./scripts/smoke-test.sh prod
 ```
 
@@ -195,7 +196,7 @@ Para acessar via Ingress com o host correto, use o header `Host` (não é
 necessário editar `/etc/hosts`):
 
 ```bash
-curl -H "Host: dev.case-chatguru.local"  http://localhost/info
+curl -H "Host: stg.case-chatguru.local"  http://localhost/info
 curl -H "Host: prod.case-chatguru.local" http://localhost/info
 ```
 
@@ -215,7 +216,7 @@ sobrescrevendo a tag do overlay via `IMAGE=`:
 ```bash
 docker build -t ghcr.io/wllgomes/case-chatguru:local .
 kind load docker-image ghcr.io/wllgomes/case-chatguru:local --name case-chatguru
-IMAGE=ghcr.io/wllgomes/case-chatguru:local ./scripts/deploy.sh dev
+IMAGE=ghcr.io/wllgomes/case-chatguru:local ./scripts/deploy.sh stg
 ```
 
 Passo a passo detalhado (inclusive fora do kind) em [`DEPLOY.md`](DEPLOY.md).
@@ -230,33 +231,33 @@ duplicada em outro lugar):
 |---|---|
 | `scripts/setup-kind.sh` | Cria o cluster kind (`kind/kind-config.yaml`) e instala o ingress-nginx |
 | `scripts/install-kubeconform.sh` | Instala o `kubeconform` em `.bin/` (usado na validação dos manifests) |
-| `scripts/deploy.sh <dev\|prod>` | Cria o namespace, aplica o overlay e aguarda o rollout |
-| `scripts/smoke-test.sh <dev\|prod>` | Valida a aplicação já implantada (via Service e via Ingress) |
+| `scripts/deploy.sh <stg\|prod>` | Cria o namespace, aplica o overlay e aguarda o rollout |
+| `scripts/smoke-test.sh <stg\|prod>` | Valida a aplicação já implantada (via Service e via Ingress) |
 | `scripts/destroy-kind.sh` | Destrói o cluster kind |
 
 Logs de um ambiente já implantado:
 
 ```bash
-kubectl -n case-chatguru-dev  logs -l app=case-chatguru -f
+kubectl -n case-chatguru-stg  logs -l app=case-chatguru -f
 kubectl -n case-chatguru-prod logs -l app=case-chatguru -f
 ```
 
-## Ambientes: dev vs prod
+## Ambientes: stg vs prod
 
 Ambos nascem do mesmo `k8s/base`, via Kustomize `namePrefix` + `namespace`
 + `patches`. Nenhum manifest é duplicado — as diferenças ficam só nos
 patches de cada overlay.
 
-| | dev | prod |
+| | stg | prod |
 |---|---|---|
-| Namespace | `case-chatguru-dev` | `case-chatguru-prod` |
+| Namespace | `case-chatguru-stg` | `case-chatguru-prod` |
 | Réplicas | 1 | 2 |
 | CPU request/limit | 25m / 100m | 100m / 500m |
 | Memória request/limit | 32Mi / 64Mi | 128Mi / 256Mi |
-| Host do Ingress | `dev.case-chatguru.local` | `prod.case-chatguru.local` |
+| Host do Ingress | `stg.case-chatguru.local` | `prod.case-chatguru.local` |
 | Tag de imagem | `latest` (acompanha `main`) | `sha-2953c21` (fixada) |
 
-`dev` sempre aponta para a última imagem publicada em `main` (`latest`).
+`stg` sempre aponta para a última imagem publicada em `main` (`latest`).
 `prod` fixa uma tag imutável por SHA do commit — deliberadamente **não**
 acompanha `main` sozinho. Promover uma nova versão para prod é uma ação
 explícita: escolher a tag `sha-<commit>` já publicada pela pipeline (ver
@@ -270,7 +271,7 @@ e comitar — o histórico do git vira o histórico de releases de prod.
 demanda via `workflow_dispatch`), com 4 jobs encadeados:
 
 1. **`test`** — instala dependências e roda `pytest`.
-2. **`validate-manifests`** — renderiza os três alvos (`base`, `overlays/dev`,
+2. **`validate-manifests`** — renderiza os três alvos (`base`, `overlays/stg`,
    `overlays/prod`) com `kustomize build` e valida o YAML resultante contra
    o schema oficial da API do Kubernetes com
    [kubeconform](https://github.com/yannh/kubeconform). Isso pega erros que
@@ -279,7 +280,7 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
 3. **`deploy-kind`** — builda a imagem, sobe um cluster kind efêmero com o
    mesmo `scripts/setup-kind.sh` executado localmente, carrega a
    imagem via `kind load docker-image` (sem depender de registry — funciona
-   igual em PR de fork), faz o deploy real em `dev` e `prod`, roda o smoke
+   igual em PR de fork), faz o deploy real em `stg` e `prod`, roda o smoke
    test em cada um, e por fim **destrói o cluster** (`if: always()`, mesmo
    se algo falhar). Se qualquer etapa falhar, um passo de diagnóstico coleta
    pods, eventos e logs do cluster antes de encerrar.
@@ -305,13 +306,13 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
   publicada com essa tag.
 - **`prod` pina uma tag por SHA em vez de `latest`**: evita que o
   ambiente de produção mude sozinho a cada novo `push` em `main` sem uma
-  decisão explícita de promoção (só `dev` acompanha `main` automaticamente).
+  decisão explícita de promoção (só `stg` acompanha `main` automaticamente).
 - **`imagePullPolicy: IfNotPresent` explícito no Deployment**: sem isso, o
   Kubernetes decide a política sozinho com base na tag ser ou não
   literalmente `latest` — e essa decisão fica **gravada no objeto desde a
   criação**, sobrevivendo até a um `kubectl set image` posterior que troque
   a tag por outra coisa. Foi exatamente o bug que pegamos aqui: o overlay
-  `dev` cria o Deployment com a tag `latest` (política vira `Always` por
+  `stg` cria o Deployment com a tag `latest` (política vira `Always` por
   default), e a CI depois troca a imagem via `kubectl set image` para uma
   tag que só existe localmente (carregada via `kind load docker-image`) —
   sem o `IfNotPresent` explícito, o kubelet insistia em puxar da rede uma
@@ -329,6 +330,38 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
 - **Versão do ingress-nginx fixada** (`controller-v1.13.0`) em vez de
   apontar para `main` do repositório: evita que o setup do cluster quebre
   sozinho quando o upstream mudar.
+
+## Evolução futura: promoção por branch
+
+Hoje o repositório roda num único branch (`main`): todo `push` valida e
+implanta os dois overlays (`stg` e `prod`) no mesmo cluster efêmero de CI,
+e a promoção de uma nova versão para o `prod` real é feita editando
+deliberadamente a tag fixada em `k8s/overlays/prod/kustomization.yaml`
+(ver [Ambientes](#ambientes-stg-vs-prod)) — o `push` em si não muda o que
+está rodando em produção.
+
+Isso funciona bem pra um único repositório/cluster, mas em um ambiente
+real com múltiplos desenvolvedores eu estruturaria por branch, refletindo
+o próprio fluxo de promoção:
+
+- **`stg`** — branch de integração. Toda feature branch abre PR contra
+  `stg`; o merge dispara a CI, que builda, valida e faz deploy automático
+  no ambiente de staging (o cluster real, não um kind efêmero).
+- **`main`** — branch protegido, espelha o que está em produção. A
+  promoção stg → prod é um PR de `stg` para `main` (idealmente exigindo
+  aprovação e os checks da CI verdes); o merge dispara o job de `prod`,
+  publicando uma tag de imagem imutável e atualizando o cluster real.
+- **Branch protection** em `main` (exigir PR + review + status checks)
+  substituiria a promoção manual por edição de `kustomization.yaml` por
+  um histórico de PRs — mais auditável.
+
+Não implementei essa estrutura aqui por dois motivos: o desafio pede
+explicitamente só o disparo em push/PR para a branch principal (no
+singular), e reestruturar o modelo de branches a poucos dias da entrega
+tem mais risco de introduzir um bug novo do que valor de demonstrar mais
+uma camada de CI. O modelo atual (overlays + tag pinada) já cobre o
+mesmo problema de fundo — mudança de ambiente como ação deliberada, não
+automática — só que via `kustomization.yaml` em vez de via branch.
 
 ## Troubleshooting
 
@@ -352,15 +385,15 @@ Duas causas prováveis:
    `Failed`.
 
 **Ingress retorna 404**
-Confira se está enviando o header `Host` correto (`dev.case-chatguru.local`
+Confira se está enviando o header `Host` correto (`stg.case-chatguru.local`
 ou `prod.case-chatguru.local`) — sem ele o nginx não sabe para qual serviço
 rotear.
 
-**Rollout trava em `scripts/deploy.sh dev`/`prod`**
+**Rollout trava em `scripts/deploy.sh stg`/`prod`**
 Investigue o estado dos pods diretamente:
 
 ```bash
-kubectl -n case-chatguru-dev get pods
-kubectl -n case-chatguru-dev describe deployment dev-case-chatguru
-kubectl -n case-chatguru-dev logs -l app=case-chatguru
+kubectl -n case-chatguru-stg get pods
+kubectl -n case-chatguru-stg describe deployment stg-case-chatguru
+kubectl -n case-chatguru-stg logs -l app=case-chatguru
 ```
