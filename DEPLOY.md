@@ -284,7 +284,7 @@ fictícios):
   especificamente para acrescentar host real + anotação do
   `cert-manager` por cima dos overlays `stg`/`prod` originais, sem
   alterá-los (os overlays "oficiais" deste desafio continuam com host
-  fictício, por design — ver seção 7).
+  fictício, por design — ver a introdução deste documento e a seção 8).
 - **Registry**: a imagem já está pública no GHCR, então nenhum cluster
   precisa de credencial para puxá-la; um registry privado exigiria um
   `imagePullSecrets` no `Deployment`.
