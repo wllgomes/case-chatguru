@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: stg-case-chatguru
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  tls:
+    - hosts:
+        - case-chatguru-stg.duckdns.org
+      secretName: stg-case-chatguru-tls
+  rules:
+    - host: case-chatguru-stg.duckdns.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: stg-case-chatguru
+                port:
+                  number: 80

@@ -7,8 +7,11 @@ set -euo pipefail
 #   1. Direto no Service (via port-forward)  -> prova que o Pod serve tráfego.
 #   2. Através do Ingress (Host header)      -> prova que o roteamento funciona.
 #
-# Variável opcional:
-#   INGRESS_URL - base do ingress (default: http://localhost).
+# Variáveis opcionais:
+#   INGRESS_URL  - base do ingress (default: http://localhost).
+#   INGRESS_HOST - header Host a enviar (default: <ambiente>.case-chatguru.local).
+#                  Sobrescrever junto com INGRESS_URL para validar um Ingress
+#                  com host/TLS reais (ex.: INGRESS_URL=https://exemplo.com).
 
 ENVIRONMENT="${1:-}"
 INGRESS_URL="${INGRESS_URL:-http://localhost}"
@@ -20,7 +23,7 @@ fi
 
 NAMESPACE="case-chatguru-$ENVIRONMENT"
 SERVICE_NAME="${ENVIRONMENT}-case-chatguru"
-INGRESS_HOST="${ENVIRONMENT}.case-chatguru.local"
+INGRESS_HOST="${INGRESS_HOST:-${ENVIRONMENT}.case-chatguru.local}"
 LOCAL_PORT="${LOCAL_PORT:-18080}"
 
 FAILURES=0

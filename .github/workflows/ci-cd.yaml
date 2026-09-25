@@ -11,7 +11,6 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   LOCAL_IMAGE: ghcr.io/wllgomes/case-chatguru
-  KIND_CLUSTER: case-chatguru
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,80 +54,16 @@ jobs:
 
       - name: Validar overlays contra o schema da API do Kubernetes
         run: |
-          for target in k8s/base k8s/overlays/stg k8s/overlays/prod; do
+          for target in k8s/base k8s/overlays/stg k8s/overlays/prod k8s/overlays/stg-aws k8s/overlays/prod-aws; do
             echo "::group::$target"
             kubectl kustomize "$target" \
               | kubeconform -strict -summary -kubernetes-version 1.31.0 -
             echo "::endgroup::"
           done
 
-  deploy-kind:
-    name: Deploy end-to-end no kind
-    needs: [test, validate-manifests]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Build da imagem
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: ${{ env.LOCAL_IMAGE }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Criar cluster kind + ingress-nginx
-        run: ./scripts/setup-kind.sh
-
-      - name: Carregar a imagem no cluster kind
-        run: |
-          kind load docker-image "${LOCAL_IMAGE}:${GITHUB_SHA}" \
-            --name "$KIND_CLUSTER"
-
-      - name: Deploy no ambiente stg
-        env:
-          IMAGE: ${{ env.LOCAL_IMAGE }}:${{ github.sha }}
-        run: ./scripts/deploy.sh stg
-
-      - name: Smoke test do ambiente stg
-        run: ./scripts/smoke-test.sh stg
-
-      - name: Deploy no ambiente prod
-        env:
-          IMAGE: ${{ env.LOCAL_IMAGE }}:${{ github.sha }}
-        run: ./scripts/deploy.sh prod
-
-      - name: Smoke test do ambiente prod
-        run: ./scripts/smoke-test.sh prod
-
-      - name: Coletar diagnóstico em caso de falha
-        if: failure()
-        run: |
-          set +e
-          echo "::group::Nodes"
-          kubectl get nodes -o wide
-          echo "::endgroup::"
-          for ns in case-chatguru-stg case-chatguru-prod ingress-nginx; do
-            echo "::group::Namespace $ns"
-            kubectl -n "$ns" get all,ingress,configmap
-            kubectl -n "$ns" describe pods
-            kubectl -n "$ns" logs -l app=case-chatguru --tail=100 --all-containers
-            echo "::endgroup::"
-          done
-          echo "::group::Eventos do cluster"
-          kubectl get events -A --sort-by=.lastTimestamp | tail -50
-          echo "::endgroup::"
-
-      - name: Destruir cluster kind
-        if: always()
-        run: ./scripts/destroy-kind.sh
-
   publish:
     name: Publicar imagem no GHCR
-    needs: [deploy-kind]
+    needs: [test, validate-manifests]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -165,3 +100,67 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy-aws:
+    name: Deploy no servidor de demonstração (AWS)
+    needs: [publish]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      DEMO_HOST: 32.192.37.170
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar acesso SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          install -m 600 /dev/null ~/.ssh/id_ed25519
+          echo "${{ secrets.AWS_DEMO_SSH_KEY }}" > ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEMO_HOST" >> ~/.ssh/known_hosts
+
+      - name: Copiar manifests e scripts para o servidor
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" "rm -rf /tmp/case-chatguru-deploy && mkdir -p /tmp/case-chatguru-deploy"
+          scp -i ~/.ssh/id_ed25519 -r k8s scripts ubuntu@"$DEMO_HOST":/tmp/case-chatguru-deploy/
+
+      - name: Deploy no ambiente stg
+        run: |
+          SHA_TAG="${LOCAL_IMAGE}:sha-${GITHUB_SHA:0:7}"
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
+            "cd /tmp/case-chatguru-deploy && OVERLAY_DIR=k8s/overlays/stg-aws IMAGE=$SHA_TAG ./scripts/deploy.sh stg"
+
+      - name: Deploy no ambiente prod
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
+            "cd /tmp/case-chatguru-deploy && OVERLAY_DIR=k8s/overlays/prod-aws ./scripts/deploy.sh prod"
+
+      - name: Smoke test do ambiente stg
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
+            "cd /tmp/case-chatguru-deploy && INGRESS_URL=https://case-chatguru-stg.duckdns.org INGRESS_HOST=case-chatguru-stg.duckdns.org ./scripts/smoke-test.sh stg"
+
+      - name: Smoke test do ambiente prod
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
+            "cd /tmp/case-chatguru-deploy && INGRESS_URL=https://case-chatguru-prod.duckdns.org INGRESS_HOST=case-chatguru-prod.duckdns.org ./scripts/smoke-test.sh prod"
+
+      - name: Verificar acesso público (HTTPS real)
+        run: |
+          curl -sS --fail --retry 5 --retry-delay 3 https://case-chatguru-stg.duckdns.org/health
+          echo
+          curl -sS --fail --retry 5 --retry-delay 3 https://case-chatguru-prod.duckdns.org/health
+          echo
+
+      - name: Coletar diagnóstico em caso de falha
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" '
+            set +e
+            for ns in case-chatguru-stg case-chatguru-prod ingress-nginx cert-manager; do
+              echo "::group::Namespace $ns"
+              kubectl -n "$ns" get all,ingress,configmap,certificate
+              kubectl -n "$ns" describe pods
+              kubectl -n "$ns" logs -l app=case-chatguru --tail=100 --all-containers
+              echo "::endgroup::"
+            done
+          '
