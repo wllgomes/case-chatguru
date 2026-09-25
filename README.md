@@ -3,8 +3,9 @@
 Case técnico: API Flask simples, containerizada e implantada em Kubernetes
 (cluster local via [kind](https://kind.sigs.k8s.io/)), com dois ambientes
 (`stg` e `prod`) gerenciados via [Kustomize](https://kustomize.io/) e uma
-pipeline de CI/CD no GitHub Actions que testa, valida, builda e faz o deploy
-end-to-end de forma automatizada antes de publicar a imagem.
+pipeline de CI/CD no GitHub Actions que testa, valida os manifests,
+publica a imagem no GHCR e realiza deploy automatizado em staging, com
+promoção controlada para produção.
 
 ## Sumário
 
@@ -419,40 +420,22 @@ atualizam os Deployments nele.
 
 O repositório roda num único branch (`main`), como o desafio pede
 explicitamente ("disparado em push/PR para a branch principal", no
-singular). Duas camadas de "promoção deliberada" já existem hoje, em
-níveis diferentes:
+singular). A promoção controlada pra produção já existe hoje em duas
+camadas: a tag de imagem fixada manualmente em
+`k8s/overlays/prod/kustomization.yaml` (ver
+[Ambientes](#ambientes-stg-vs-prod)), e o
+[Environment](https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment)
+`production` com *required reviewers* que pausa o `deploy-prod-aws` até
+alguém aprovar manualmente (ver [Pipeline de CI/CD](#pipeline-de-cicd)).
 
-- **No overlay `prod` "oficial"** (kind/local): a tag de imagem é fixada
-  manualmente em `k8s/overlays/prod/kustomization.yaml` — promover uma
-  versão é editar esse arquivo e comitar (ver
-  [Ambientes](#ambientes-stg-vs-prod)). Não existe aprovação de verdade
-  aqui, só o fato de a tag não seguir `main` sozinha.
-- **No ambiente de demonstração pública** (AWS): o job `deploy-prod-aws`
-  usa um [Environment](https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment)
-  do GitHub com *required reviewers* — a pipeline **pausa de verdade**
-  esperando uma aprovação manual antes de tocar em prod (ver
-  [Pipeline de CI/CD](#pipeline-de-cicd)). Isso já é uma promoção
-  controlada de verdade, sem precisar de branches separados.
-
-O que ainda não existe, e como eu estruturaria num ambiente real com
-múltiplos desenvolvedores, é um modelo por branch:
-
-- **`stg`** — branch de integração. Toda feature branch abre PR contra
-  `stg`; o merge dispara a CI, que builda, valida e faz deploy automático
-  no ambiente de staging.
-- **`main`** — branch protegido, espelha o que está em produção. A
-  promoção stg → prod é um PR de `stg` para `main` (exigindo review e os
-  checks da CI verdes); o merge dispara o deploy de produção.
-- **Branch protection** em `main` (exigir PR + review + status checks)
-  daria um histórico de PRs como trilha de auditoria de releases, em vez
-  de só commits editando uma tag.
-
-Não implementei essa reestruturação de branches por dois motivos: o
-desafio pede só um branch principal, e mexer nisso a poucos dias da
-entrega tem mais risco de introduzir um bug novo do que valor — o
-`Environment` com aprovação manual já cobre a parte que mais importava
-(produção não muda sem uma decisão humana explícita) com uma mudança bem
-menor e mais segura.
+O que ainda falta, e como eu estruturaria num ambiente real com múltiplos
+desenvolvedores, é um modelo por branch: `stg` como branch de integração
+(merge dispara deploy automático em staging) e `main` protegido, só
+atualizado via PR de `stg` — a promoção vira um PR revisado, em vez de um
+commit editando uma tag. Não implementei isso aqui porque o desafio pede
+só um branch principal, e a aprovação manual via `Environment` já resolve
+o problema de fundo (produção não muda sem decisão humana) sem o risco de
+reestruturar branches a poucos dias da entrega.
 
 ## Troubleshooting
 
