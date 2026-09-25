@@ -16,6 +16,7 @@ end-to-end de forma automatizada antes de publicar a imagem.
 - [Quickstart (Kubernetes local via kind)](#quickstart-kubernetes-local-via-kind)
 - [Scripts disponíveis](#scripts-disponíveis)
 - [Ambientes: stg vs prod](#ambientes-stg-vs-prod)
+- [Ambiente de demonstração pública](#ambiente-de-demonstração-pública)
 - [Pipeline de CI/CD](#pipeline-de-cicd)
 - [Decisões de projeto](#decisões-de-projeto)
 - [Evolução futura: promoção por branch](#evolução-futura-promoção-por-branch)
@@ -71,6 +72,10 @@ k8s/
                                 host stg.case-chatguru.local
     prod/                      Patches: 2 réplicas, resources maiores,
                                 host prod.case-chatguru.local
+    stg-aws/                   Herda de stg/, troca host/TLS para o
+                                servidor de demonstração pública
+    prod-aws/                  Herda de prod/, troca host/TLS para o
+                                servidor de demonstração pública
 
 kind/kind-config.yaml       Cluster kind com portas 80/443 mapeadas
                              (necessário para o ingress-nginx)
@@ -83,7 +88,7 @@ scripts/
   destroy-kind.sh             Destrói o cluster
 
 .github/workflows/ci-cd.yaml  Pipeline: testes → validação de manifests →
-                               deploy real no kind → smoke test → publish
+                               publish (GHCR) → deploy no servidor AWS
 
 Dockerfile                  Imagem final: python:3.12-slim + gunicorn,
                              non-root, com HEALTHCHECK
@@ -265,29 +270,60 @@ explícita: escolher a tag `sha-<commit>` já publicada pela pipeline (ver
 [`k8s/overlays/prod/kustomization.yaml`](k8s/overlays/prod/kustomization.yaml)
 e comitar — o histórico do git vira o histórico de releases de prod.
 
+## Ambiente de demonstração pública
+
+Além dos overlays `stg`/`prod` (host fictício, pensados para reprodução
+local via kind — ver [DEPLOY.md](DEPLOY.md)), existe um servidor real na
+AWS servindo a aplicação publicamente, com TLS válido via Let's Encrypt:
+
+| Ambiente | URL |
+|---|---|
+| stg | https://case-chatguru-stg.duckdns.org |
+| prod | https://case-chatguru-prod.duckdns.org |
+
+Esse servidor roda [k3s](https://k3s.io/) (Kubernetes real, não kind) numa
+instância EC2, com `ingress-nginx` + `cert-manager` emitindo certificados
+via `ClusterIssuer` do Let's Encrypt, e DNS real via
+[DuckDNS](https://www.duckdns.org/) apontando para o IP público.
+
+Os overlays [`k8s/overlays/stg-aws`](k8s/overlays/stg-aws) e
+[`k8s/overlays/prod-aws`](k8s/overlays/prod-aws) existem só para esse
+propósito: cada um herda o overlay correspondente (`../stg`, `../prod`)
+via `resources:` e aplica um único patch trocando host/TLS/anotação do
+`cert-manager` pelos domínios reais — sem duplicar Deployment, Service ou
+ConfigMap, e sem alterar os overlays originais que o restante desta
+documentação descreve. É esse par de overlays que o job `deploy-aws` da
+pipeline aplica (ver [Pipeline de CI/CD](#pipeline-de-cicd)).
+
+Esse servidor é temporário (mantido apenas para avaliação) e não faz
+parte do escopo obrigatório do desafio — existe só para dar aos
+avaliadores um link clicável, além do repositório.
+
 ## Pipeline de CI/CD
 
 `.github/workflows/ci-cd.yaml` roda em todo push/PR para `main` (e sob
 demanda via `workflow_dispatch`), com 4 jobs encadeados:
 
 1. **`test`** — instala dependências e roda `pytest`.
-2. **`validate-manifests`** — renderiza os três alvos (`base`, `overlays/stg`,
-   `overlays/prod`) com `kustomize build` e valida o YAML resultante contra
-   o schema oficial da API do Kubernetes com
-   [kubeconform](https://github.com/yannh/kubeconform). Isso pega erros que
-   `kustomize build` sozinho deixa passar (um campo com o nome errado num
-   patch, por exemplo, renderiza sem erro e só quebraria no `kubectl apply`).
-3. **`deploy-kind`** — builda a imagem, sobe um cluster kind efêmero com o
-   mesmo `scripts/setup-kind.sh` executado localmente, carrega a
-   imagem via `kind load docker-image` (sem depender de registry — funciona
-   igual em PR de fork), faz o deploy real em `stg` e `prod`, roda o smoke
-   test em cada um, e por fim **destrói o cluster** (`if: always()`, mesmo
-   se algo falhar). Se qualquer etapa falhar, um passo de diagnóstico coleta
-   pods, eventos e logs do cluster antes de encerrar.
-4. **`publish`** — só roda em push para `main` e só depois do `deploy-kind`
-   ter passado. Builda e publica a imagem no GHCR com tags por SHA e
-   `latest`. Ou seja: **nada é publicado sem antes provar que sobe de
-   verdade em um cluster Kubernetes.**
+2. **`validate-manifests`** — renderiza os cinco alvos (`base`, `overlays/stg`,
+   `overlays/prod`, `overlays/stg-aws`, `overlays/prod-aws`) com
+   `kustomize build` e valida o YAML resultante contra o schema oficial da
+   API do Kubernetes com [kubeconform](https://github.com/yannh/kubeconform).
+   Isso pega erros que `kustomize build` sozinho deixa passar (um campo com
+   o nome errado num patch, por exemplo, renderiza sem erro e só quebraria
+   no `kubectl apply`).
+3. **`publish`** — só roda em push para `main`, depois de `test` e
+   `validate-manifests` passarem. Builda e publica a imagem no GHCR com
+   tags por SHA (longa e curta) e `latest`.
+4. **`deploy-aws`** — só roda depois do `publish`. Via SSH (chave em
+   `secrets.AWS_DEMO_SSH_KEY`), aplica `k8s/overlays/stg-aws` (com a tag
+   `sha-<commit>` recém publicada, via `IMAGE=` de `scripts/deploy.sh`) e
+   `k8s/overlays/prod-aws` no servidor de demonstração pública (ver
+   [Ambiente de demonstração pública](#ambiente-de-demonstração-pública)),
+   roda `scripts/smoke-test.sh` contra o host/TLS reais de cada ambiente, e
+   por fim confere as URLs públicas via HTTPS de fora. Diferente do modelo
+   anterior (kind efêmero), esse servidor é **persistente** — o job nunca o
+   destrói, só atualiza os Deployments nele.
 
 ## Decisões de projeto
 
@@ -295,15 +331,30 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
   diferenças pequenas (réplicas, resources, host, tag de imagem) — overlays
   com patches são suficientes e mais diretos de ler do que um chart com
   `values.yaml`.
-- **`kind load docker-image` em vez de registry na pipeline de deploy**: o
-  job de deploy-kind não depende de credenciais nem de rede externa para
-  colocar a imagem no cluster, então roda igual em PRs de forks. A imagem só
-  vai para o GHCR depois de passar no deploy real.
-- **Imagem fixada por SHA do commit no deploy da CI** (`IMAGE=` em
-  `scripts/deploy.sh`), em vez de depender da tag `latest` do overlay:
-  garante que o smoke test valida exatamente o artefato que acabou de ser
-  construído — e não uma versão diferente que porventura já esteja
-  publicada com essa tag.
+- **`publish` roda antes do deploy, não depois**: a versão anterior desta
+  pipeline testava num cluster kind efêmero primeiro (usando
+  `kind load docker-image`, sem precisar de registry) e só publicava no
+  GHCR depois de provar que subia. Isso funcionava porque o kind é local
+  ao runner. O servidor de demonstração é remoto e puxa a imagem pela
+  rede — não existe "carregar localmente" num host que não é o runner —
+  então a imagem precisa estar publicada **antes** do deploy poder
+  acontecer. A validação de manifests (`kubeconform`) continua rodando
+  antes de tudo, então um erro óbvio de manifest ainda barra a pipeline
+  antes de publicar qualquer coisa.
+- **Overlays `stg-aws`/`prod-aws` em vez de editar `stg`/`prod`
+  diretamente**: eles herdam o overlay original via `resources:` e só
+  sobrescrevem host/TLS/anotação do `cert-manager` num patch — uma
+  aplicação imperativa (`kubectl patch` direto no cluster) foi descartada
+  porque `kubectl apply` reverte esse tipo de patch na próxima execução da
+  pipeline (o campo `host` está declarado no manifest original, então um
+  novo `apply` o sobrescreve de volta). Com overlay dedicado, cada `apply`
+  é idempotente e correto — sem depender de estado imperativo escondido.
+- **Imagem fixada por SHA do commit no deploy** (`IMAGE=` em
+  `scripts/deploy.sh`), em vez de depender só da tag `latest` do overlay:
+  garante que cada deploy do `stg` puxe exatamente o artefato que acabou
+  de ser construído (com `imagePullPolicy: IfNotPresent`, uma tag nova e
+  única força um pull fresco sem depender do Kubernetes perceber que a
+  tag "mudou de conteúdo" — o que ele nunca percebe sozinho).
 - **`prod` pina uma tag por SHA em vez de `latest`**: evita que o
   ambiente de produção mude sozinho a cada novo `push` em `main` sem uma
   decisão explícita de promoção (só `stg` acompanha `main` automaticamente).
