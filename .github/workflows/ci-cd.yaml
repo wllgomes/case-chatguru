@@ -101,14 +101,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy-aws:
-    name: Deploy no servidor de demonstração (AWS)
+  deploy-stg-aws:
+    name: Deploy stg no servidor de demonstração (AWS)
     needs: [publish]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    continue-on-error: true
     env:
-      DEMO_HOST: 32.192.37.170
+      DEMO_HOST: ${{ vars.AWS_DEMO_HOST }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,15 +129,52 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
             "cd /tmp/case-chatguru-deploy && OVERLAY_DIR=k8s/overlays/stg-aws IMAGE=$SHA_TAG ./scripts/deploy.sh stg"
 
-      - name: Deploy no ambiente prod
-        run: |
-          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
-            "cd /tmp/case-chatguru-deploy && OVERLAY_DIR=k8s/overlays/prod-aws ./scripts/deploy.sh prod"
-
       - name: Smoke test do ambiente stg
         run: |
           ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
             "cd /tmp/case-chatguru-deploy && INGRESS_URL=https://case-chatguru-stg.duckdns.org INGRESS_HOST=case-chatguru-stg.duckdns.org ./scripts/smoke-test.sh stg"
+
+      - name: Verificar acesso público (HTTPS real)
+        run: curl -sS --fail --retry 5 --retry-delay 3 https://case-chatguru-stg.duckdns.org/health
+
+      - name: Coletar diagnóstico em caso de falha
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" '
+            set +e
+            echo "::group::Namespace case-chatguru-stg"
+            kubectl -n case-chatguru-stg get all,ingress,configmap,certificate
+            kubectl -n case-chatguru-stg describe pods
+            kubectl -n case-chatguru-stg logs -l app=case-chatguru --tail=100 --all-containers
+            echo "::endgroup::"
+          '
+
+  deploy-prod-aws:
+    name: Deploy prod no servidor de demonstração (AWS)
+    needs: [deploy-stg-aws]
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEMO_HOST: ${{ vars.AWS_DEMO_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar acesso SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          install -m 600 /dev/null ~/.ssh/id_ed25519
+          echo "${{ secrets.AWS_DEMO_SSH_KEY }}" > ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEMO_HOST" >> ~/.ssh/known_hosts
+
+      - name: Copiar manifests e scripts para o servidor
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" "rm -rf /tmp/case-chatguru-deploy && mkdir -p /tmp/case-chatguru-deploy"
+          scp -i ~/.ssh/id_ed25519 -r k8s scripts ubuntu@"$DEMO_HOST":/tmp/case-chatguru-deploy/
+
+      - name: Deploy no ambiente prod
+        run: |
+          ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" \
+            "cd /tmp/case-chatguru-deploy && OVERLAY_DIR=k8s/overlays/prod-aws ./scripts/deploy.sh prod"
 
       - name: Smoke test do ambiente prod
         run: |
@@ -146,22 +182,16 @@ jobs:
             "cd /tmp/case-chatguru-deploy && INGRESS_URL=https://case-chatguru-prod.duckdns.org INGRESS_HOST=case-chatguru-prod.duckdns.org ./scripts/smoke-test.sh prod"
 
       - name: Verificar acesso público (HTTPS real)
-        run: |
-          curl -sS --fail --retry 5 --retry-delay 3 https://case-chatguru-stg.duckdns.org/health
-          echo
-          curl -sS --fail --retry 5 --retry-delay 3 https://case-chatguru-prod.duckdns.org/health
-          echo
+        run: curl -sS --fail --retry 5 --retry-delay 3 https://case-chatguru-prod.duckdns.org/health
 
       - name: Coletar diagnóstico em caso de falha
         if: failure()
         run: |
           ssh -i ~/.ssh/id_ed25519 ubuntu@"$DEMO_HOST" '
             set +e
-            for ns in case-chatguru-stg case-chatguru-prod ingress-nginx cert-manager; do
-              echo "::group::Namespace $ns"
-              kubectl -n "$ns" get all,ingress,configmap,certificate
-              kubectl -n "$ns" describe pods
-              kubectl -n "$ns" logs -l app=case-chatguru --tail=100 --all-containers
-              echo "::endgroup::"
-            done
+            echo "::group::Namespace case-chatguru-prod"
+            kubectl -n case-chatguru-prod get all,ingress,configmap,certificate
+            kubectl -n case-chatguru-prod describe pods
+            kubectl -n case-chatguru-prod logs -l app=case-chatguru --tail=100 --all-containers
+            echo "::endgroup::"
           '

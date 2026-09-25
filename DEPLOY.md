@@ -254,33 +254,42 @@ kubectl delete namespace case-chatguru-prod
 ./scripts/destroy-kind.sh
 ```
 
-## 10. Observação: deploy em um cluster gerenciado (cloud)
+## 10. Deploy em um cluster gerenciado (cloud) — feito de verdade
 
 Os manifests deste repositório não têm nenhuma dependência de kind — os
 mesmos comandos das seções 4–8 funcionam sem alteração em qualquer cluster
-gerenciado (EKS, GKE, AKS, OVHcloud Managed Kubernetes, etc.), desde que
-ele tenha um Ingress controller nginx instalado. As diferenças práticas
-seriam:
+real, desde que ele tenha um Ingress controller nginx instalado. Isso não
+é só teoria: existe um ambiente público rodando exatamente assim, num
+servidor [k3s](https://k3s.io/) na AWS — ver a seção **"Ambiente de
+demonstração pública"** no [README](README.md#ambiente-de-demonstração-pública)
+para as URLs e os detalhes de implementação.
 
-- **Ingress controller**: em vez do manifest estático usado pelo
-  `setup-kind.sh` (pensado para kind), a forma recomendada em produção é
-  instalar via Helm chart oficial do
-  [ingress-nginx](https://kubernetes.github.io/ingress-nginx/), que
-  provisiona automaticamente um Load Balancer da cloud (Service tipo
-  `LoadBalancer`) com IP público.
-- **DNS**: o host do Ingress deixaria de ser fictício — apontaria para um
-  domínio real via registro `A`/`CNAME` para o IP do Load Balancer.
-- **TLS**: adicionar `cert-manager` + `ClusterIssuer` (Let's Encrypt) e uma
-  seção `tls:` no `Ingress` para HTTPS.
+O que foi implementado nesse ambiente, com Ingress/DNS/TLS reais (não
+fictícios):
+
+- **Ingress controller**: o mesmo manifest estático usado pelo kind
+  funciona igual em k3s — o `ServiceLB` embutido do k3s já expõe o
+  Service `LoadBalancer` do ingress-nginx direto nas portas 80/443 do
+  nó, sem precisar de um Load Balancer de cloud gerenciado à parte.
+- **DNS**: o host do Ingress não é mais fictício — usa
+  [DuckDNS](https://www.duckdns.org/) (`case-chatguru-stg.duckdns.org` /
+  `-prod`), um serviço de DNS dinâmico gratuito, apontando para o IP
+  público da instância. **DuckDNS foi usado apenas para fornecer DNS
+  público estável no ambiente de demonstração** — não é uma escolha de
+  produção; um ambiente real de produção usaria um domínio próprio
+  registrado, numa zona DNS gerenciada (Route53, Cloudflare, etc.).
+- **TLS**: `cert-manager` + `ClusterIssuer` do Let's Encrypt, emitindo
+  certificados reais via desafio HTTP-01 — ver
+  `k8s/overlays/stg-aws` e `k8s/overlays/prod-aws`, que existem
+  especificamente para acrescentar host real + anotação do
+  `cert-manager` por cima dos overlays `stg`/`prod` originais, sem
+  alterá-los (os overlays "oficiais" deste desafio continuam com host
+  fictício, por design — ver seção 7).
 - **Registry**: a imagem já está pública no GHCR, então nenhum cluster
   precisa de credencial para puxá-la; um registry privado exigiria um
   `imagePullSecrets` no `Deployment`.
-- **State/observabilidade**: um ambiente real se beneficiaria de
-  `HorizontalPodAutoscaler`, `PodDisruptionBudget` e integração com o
-  stack de monitoramento da plataforma (não incluídos aqui por estarem
-  fora do escopo deste desafio).
 
-Essa etapa não foi implementada neste repositório por não fazer parte do
-escopo pedido — o objetivo aqui foi demonstrar a estrutura de manifests e
-o pipeline de forma reproduzível por qualquer avaliador, sem depender de
-uma conta de cloud específica.
+O que **não** foi implementado, por estar fora do escopo deste desafio:
+`HorizontalPodAutoscaler`, `PodDisruptionBudget`, e integração com um
+stack de observabilidade (Prometheus/Grafana ou equivalente da
+plataforma).

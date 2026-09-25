@@ -283,8 +283,11 @@ AWS servindo a aplicação publicamente, com TLS válido via Let's Encrypt:
 
 Esse servidor roda [k3s](https://k3s.io/) (Kubernetes real, não kind) numa
 instância EC2, com `ingress-nginx` + `cert-manager` emitindo certificados
-via `ClusterIssuer` do Let's Encrypt, e DNS real via
-[DuckDNS](https://www.duckdns.org/) apontando para o IP público.
+via `ClusterIssuer` do Let's Encrypt, e DNS apontando para o IP público
+via [DuckDNS](https://www.duckdns.org/). **DuckDNS foi usado apenas para
+fornecer DNS público estável no ambiente de demonstração** — não é uma
+escolha de produção; em produção o normal seria um domínio próprio numa
+zona DNS gerenciada (Route53, Cloudflare, etc.).
 
 Os overlays [`k8s/overlays/stg-aws`](k8s/overlays/stg-aws) e
 [`k8s/overlays/prod-aws`](k8s/overlays/prod-aws) existem só para esse
@@ -292,8 +295,8 @@ propósito: cada um herda o overlay correspondente (`../stg`, `../prod`)
 via `resources:` e aplica um único patch trocando host/TLS/anotação do
 `cert-manager` pelos domínios reais — sem duplicar Deployment, Service ou
 ConfigMap, e sem alterar os overlays originais que o restante desta
-documentação descreve. É esse par de overlays que o job `deploy-aws` da
-pipeline aplica (ver [Pipeline de CI/CD](#pipeline-de-cicd)).
+documentação descreve. São esses overlays que os jobs `deploy-stg-aws` e
+`deploy-prod-aws` da pipeline aplicam (ver [Pipeline de CI/CD](#pipeline-de-cicd)).
 
 Esse servidor é temporário (mantido apenas para avaliação) e não faz
 parte do escopo obrigatório do desafio — existe só para dar aos
@@ -302,7 +305,24 @@ avaliadores um link clicável, além do repositório.
 ## Pipeline de CI/CD
 
 `.github/workflows/ci-cd.yaml` roda em todo push/PR para `main` (e sob
-demanda via `workflow_dispatch`), com 4 jobs encadeados:
+demanda via `workflow_dispatch`), com 5 jobs encadeados:
+
+```
+push main
+  ├─ test ─────────────┐
+  └─ validate-manifests ┤
+                        v
+                     publish (GHCR)
+                        │
+                        v
+                  deploy-stg-aws
+                        │
+                        v
+                 [aprovação manual]
+                        │
+                        v
+                  deploy-prod-aws
+```
 
 1. **`test`** — instala dependências e roda `pytest`.
 2. **`validate-manifests`** — renderiza os cinco alvos (`base`, `overlays/stg`,
@@ -315,15 +335,28 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
 3. **`publish`** — só roda em push para `main`, depois de `test` e
    `validate-manifests` passarem. Builda e publica a imagem no GHCR com
    tags por SHA (longa e curta) e `latest`.
-4. **`deploy-aws`** — só roda depois do `publish`. Via SSH (chave em
-   `secrets.AWS_DEMO_SSH_KEY`), aplica `k8s/overlays/stg-aws` (com a tag
-   `sha-<commit>` recém publicada, via `IMAGE=` de `scripts/deploy.sh`) e
-   `k8s/overlays/prod-aws` no servidor de demonstração pública (ver
+4. **`deploy-stg-aws`** — só roda depois do `publish`. Via SSH (chave em
+   `secrets.AWS_DEMO_SSH_KEY`, host em `vars.AWS_DEMO_HOST`), aplica
+   `k8s/overlays/stg-aws` no servidor de demonstração pública (ver
    [Ambiente de demonstração pública](#ambiente-de-demonstração-pública)),
-   roda `scripts/smoke-test.sh` contra o host/TLS reais de cada ambiente, e
-   por fim confere as URLs públicas via HTTPS de fora. Diferente do modelo
-   anterior (kind efêmero), esse servidor é **persistente** — o job nunca o
-   destrói, só atualiza os Deployments nele.
+   fixando a imagem na tag `sha-<commit>` que acabou de ser publicada, e
+   roda `scripts/smoke-test.sh` contra o host/TLS real. Uma falha aqui
+   **derruba a pipeline inteira** (sem `continue-on-error`) — esse
+   ambiente é parte da entrega, não um extra opcional.
+5. **`deploy-prod-aws`** — só roda depois do `deploy-stg-aws`, e só depois
+   de uma **aprovação manual**: o job usa o
+   [Environment](https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment)
+   `production`, configurado com *required reviewers*, então a execução
+   fica pausada em "Review deployments" até alguém aprovar
+   explicitamente. Só então aplica `k8s/overlays/prod-aws` e roda o smoke
+   test contra o prod real. Isso espelha a mesma filosofia de "prod muda
+   por decisão explícita" que já vale para a tag fixada no overlay
+   `prod` (ver [Ambientes](#ambientes-stg-vs-prod)) — só que agora
+   também no ambiente de demonstração pública, não só no overlay.
+
+Diferente do modelo anterior (kind efêmero, destruído a cada run), o
+servidor da AWS é **persistente** — os jobs nunca o destroem, só
+atualizam os Deployments nele.
 
 ## Decisões de projeto
 
@@ -384,35 +417,42 @@ demanda via `workflow_dispatch`), com 4 jobs encadeados:
 
 ## Evolução futura: promoção por branch
 
-Hoje o repositório roda num único branch (`main`): todo `push` valida e
-implanta os dois overlays (`stg` e `prod`) no mesmo cluster efêmero de CI,
-e a promoção de uma nova versão para o `prod` real é feita editando
-deliberadamente a tag fixada em `k8s/overlays/prod/kustomization.yaml`
-(ver [Ambientes](#ambientes-stg-vs-prod)) — o `push` em si não muda o que
-está rodando em produção.
+O repositório roda num único branch (`main`), como o desafio pede
+explicitamente ("disparado em push/PR para a branch principal", no
+singular). Duas camadas de "promoção deliberada" já existem hoje, em
+níveis diferentes:
 
-Isso funciona bem pra um único repositório/cluster, mas em um ambiente
-real com múltiplos desenvolvedores eu estruturaria por branch, refletindo
-o próprio fluxo de promoção:
+- **No overlay `prod` "oficial"** (kind/local): a tag de imagem é fixada
+  manualmente em `k8s/overlays/prod/kustomization.yaml` — promover uma
+  versão é editar esse arquivo e comitar (ver
+  [Ambientes](#ambientes-stg-vs-prod)). Não existe aprovação de verdade
+  aqui, só o fato de a tag não seguir `main` sozinha.
+- **No ambiente de demonstração pública** (AWS): o job `deploy-prod-aws`
+  usa um [Environment](https://docs.github.com/actions/deployment/targeting-different-environments/using-environments-for-deployment)
+  do GitHub com *required reviewers* — a pipeline **pausa de verdade**
+  esperando uma aprovação manual antes de tocar em prod (ver
+  [Pipeline de CI/CD](#pipeline-de-cicd)). Isso já é uma promoção
+  controlada de verdade, sem precisar de branches separados.
+
+O que ainda não existe, e como eu estruturaria num ambiente real com
+múltiplos desenvolvedores, é um modelo por branch:
 
 - **`stg`** — branch de integração. Toda feature branch abre PR contra
   `stg`; o merge dispara a CI, que builda, valida e faz deploy automático
-  no ambiente de staging (o cluster real, não um kind efêmero).
+  no ambiente de staging.
 - **`main`** — branch protegido, espelha o que está em produção. A
-  promoção stg → prod é um PR de `stg` para `main` (idealmente exigindo
-  aprovação e os checks da CI verdes); o merge dispara o job de `prod`,
-  publicando uma tag de imagem imutável e atualizando o cluster real.
+  promoção stg → prod é um PR de `stg` para `main` (exigindo review e os
+  checks da CI verdes); o merge dispara o deploy de produção.
 - **Branch protection** em `main` (exigir PR + review + status checks)
-  substituiria a promoção manual por edição de `kustomization.yaml` por
-  um histórico de PRs — mais auditável.
+  daria um histórico de PRs como trilha de auditoria de releases, em vez
+  de só commits editando uma tag.
 
-Não implementei essa estrutura aqui por dois motivos: o desafio pede
-explicitamente só o disparo em push/PR para a branch principal (no
-singular), e reestruturar o modelo de branches a poucos dias da entrega
-tem mais risco de introduzir um bug novo do que valor de demonstrar mais
-uma camada de CI. O modelo atual (overlays + tag pinada) já cobre o
-mesmo problema de fundo — mudança de ambiente como ação deliberada, não
-automática — só que via `kustomization.yaml` em vez de via branch.
+Não implementei essa reestruturação de branches por dois motivos: o
+desafio pede só um branch principal, e mexer nisso a poucos dias da
+entrega tem mais risco de introduzir um bug novo do que valor — o
+`Environment` com aprovação manual já cobre a parte que mais importava
+(produção não muda sem uma decisão humana explícita) com uma mudança bem
+menor e mais segura.
 
 ## Troubleshooting
 
